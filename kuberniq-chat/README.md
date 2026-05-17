@@ -74,8 +74,8 @@ kubectl create secret generic mcp-chatbot-secrets \
 ### 2. Install the chart
 
 ```bash
-git clone https://github.com/oluwaTG/azure-devops-scripts.git
-cd azure-devops-scripts
+git clone https://github.com/oluwaTG/kuberniq.git
+cd kuberniq
 
 helm upgrade --install mcp-chatbot helm/Application/mcp-chatbot \
   --namespace mcp-chatbot \

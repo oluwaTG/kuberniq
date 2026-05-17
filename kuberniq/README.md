@@ -11,7 +11,7 @@ Modelled after `argocd cluster add` — one command sets up everything in the ta
 ### macOS / Linux — one-liner (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oluwaTG/azure-devops-scripts/main/kuberniq/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/kuberniq/install.sh | bash
 ```
 
 The script auto-detects your OS and architecture, downloads the right pre-built binary from GitHub Releases, and copies it to `/usr/local/bin`. **No .NET runtime required.**
@@ -19,20 +19,20 @@ The script auto-detects your OS and architecture, downloads the right pre-built 
 To install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oluwaTG/azure-devops-scripts/main/kuberniq/install.sh | KUBEAI_VERSION=kuberniq/v1.0.0 bash
+curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/kuberniq/install.sh | KUBEAI_VERSION=kuberniq/v1.0.0 bash
 ```
 
 To install to a custom directory (e.g. `~/.local/bin`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oluwaTG/azure-devops-scripts/main/kuberniq/install.sh | KUBEAI_INSTALL_DIR=~/.local/bin bash
+curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/kuberniq/install.sh | KUBEAI_INSTALL_DIR=~/.local/bin bash
 ```
 
 ---
 
 ### Windows
 
-Download `kuberniq-win-x64.exe` from the [latest GitHub Release](https://github.com/oluwaTG/azure-devops-scripts/releases), rename it to `kuberniq.exe`, and place it on your `PATH`.
+Download `kuberniq-win-x64.exe` from the [latest GitHub Release](https://github.com/oluwaTG/kuberniq/releases), rename it to `kuberniq.exe`, and place it on your `PATH`.
 
 ---
 

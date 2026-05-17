@@ -248,7 +248,7 @@ app.MapDelete("/clusters/{name}", async (string name) =>
 });
 
 // DTO for POST /clusters
-record RegisterClusterRequest(string Name, string Server, string? CaData, string Token);
+// record RegisterClusterRequest(string Name, string Server, string? CaData, string Token);
 
 app.MapGet("/cluster/info", async () =>
 {
@@ -1048,3 +1048,4 @@ app.MapGet("/namespaces/{ns}/replicasets", async (string ns) =>
 });
 
 app.Run();
+record RegisterClusterRequest(string Name, string Server, string? CaData, string Token);

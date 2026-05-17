@@ -6,9 +6,34 @@ on:
     paths:
       - "kuberniq/**"
 
+permissions:
+  contents: write
+
 jobs:
+  version:
+    name: Bump version
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.tag.outputs.new_version }}
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and create tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag_prefix: "cli-v"
+          default_bump: patch
+
   build:
     name: Build ${{ matrix.rid }}
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -25,19 +50,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Auto-increments semver based on conventional commits.
-      # Only runs once (on the first matrix leg) to avoid duplicate tags.
-      - name: Bump version and create tag
-        id: tag
-        if: matrix.rid == 'linux-x64'
-        uses: mathieudutour/github-tag-action@v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          tag_prefix: "cli-v"
-          default_bump: patch
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -65,25 +77,10 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Re-run the tag action to read the version that was already created above
-      - name: Read current CLI version
-        id: tag
-        uses: mathieudutour/github-tag-action@v6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          tag_prefix: "cli-v"
-          default_bump: patch
-          dry_run: true
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -93,8 +90,8 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: kuberniq CLI ${{ steps.tag.outputs.new_version }}
-          tag_name: cli-v${{ steps.tag.outputs.new_version }}
+          name: kuberniq CLI ${{ needs.version.outputs.new_version }}
+          tag_name: ${{ needs.version.outputs.new_tag }}
           files: release-assets/**
           generate_release_notes: true
         env:

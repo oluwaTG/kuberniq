@@ -2,9 +2,9 @@ name: kuberniq CLI — Release
 
 on:
   push:
-    tags:
-      - "cli/v*.*.*"
-  workflow_dispatch:
+    branches: [main]
+    paths:
+      - "kuberniq/**"
 
 jobs:
   build:
@@ -28,14 +28,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify tag is on main
-        run: |
-          git fetch origin main
-          if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
-            echo "❌ Tag must be on the main branch. Aborting."
-            exit 1
-          fi
-          echo "✅ Tag is on main."
+      # Auto-increments semver based on conventional commits.
+      # Only runs once (on the first matrix leg) to avoid duplicate tags.
+      - name: Bump version and create tag
+        id: tag
+        if: matrix.rid == 'linux-x64'
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag_prefix: "cli-v"
+          default_bump: patch
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -52,7 +54,6 @@ jobs:
       - name: Rename binary
         run: |
           SRC=dist/${{ matrix.rid }}/kuberniq
-          # Windows output already has .exe
           [ -f "${SRC}.exe" ] && SRC="${SRC}.exe"
           mv "$SRC" dist/${{ matrix.rid }}/${{ matrix.artifact }}
 
@@ -68,21 +69,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Re-run the tag action to read the version that was already created above
+      - name: Read current CLI version
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag_prefix: "cli-v"
+          default_bump: patch
+          dry_run: true
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#cli/}" >> "$GITHUB_OUTPUT"
-
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: kuberniq CLI ${{ steps.version.outputs.VERSION }}
-          tag_name: ${{ github.ref_name }}
+          name: kuberniq CLI ${{ steps.tag.outputs.new_version }}
+          tag_name: cli-v${{ steps.tag.outputs.new_version }}
           files: release-assets/**
           generate_release_notes: true
         env:

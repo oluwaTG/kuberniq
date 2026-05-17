@@ -1,78 +1,72 @@
-name: Helm — Lint & Package
+name: Helm — Update image tag
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "helm/**"
-    tags:
-      - "helm/v*.*.*"
-  pull_request:
-    paths:
-      - "helm/**"
+  # Called by kuberniq-server and kuberniq-chat workflows after a successful build
+  workflow_call:
+    inputs:
+      chart:
+        description: "Chart folder name under helm/Application/ (kuberniq-server or kuberniq-chat)"
+        required: true
+        type: string
+      image_tag:
+        description: "New image tag to write into the chart's values.yaml"
+        required: true
+        type: string
+
+  # Also allow manual runs for one-off updates
   workflow_dispatch:
+    inputs:
+      chart:
+        description: "Chart folder name (kuberniq-server or kuberniq-chat)"
+        required: true
+        type: choice
+        options:
+          - kuberniq-server
+          - kuberniq-chat
+      image_tag:
+        description: "Image tag to set (e.g. 1.0.8)"
+        required: true
+        type: string
 
 jobs:
   lint:
-    name: Lint charts
+    name: Lint ${{ inputs.chart }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Lint kuberniq-server
-        run: helm lint helm/Application/kuberniq-server
+      - name: Lint chart
+        run: helm lint helm/Application/${{ inputs.chart }}
 
-      - name: Lint kuberniq-chat
-        run: helm lint helm/Application/kuberniq-chat
-
-  package:
-    name: Package & upload charts
+  update-values:
+    name: Update image tag in values.yaml
     needs: lint
     runs-on: ubuntu-latest
-    # Only package on tag pushes
-    if: startsWith(github.ref, 'refs/tags/helm/')
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # Use a PAT so the commit triggers downstream workflows if needed
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify tag is on main
+      - name: Update image.tag in values.yaml
         run: |
-          git fetch origin main
-          if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
-            echo "❌ Tag must be on the main branch. Aborting."
-            exit 1
-          fi
-          echo "✅ Tag is on main."
+          FILE="helm/Application/${{ inputs.chart }}/values.yaml"
+          # Replace the tag value under the image block
+          sed -i "s/^\(  tag:\s*\)\".*\"/\1\"${{ inputs.image_tag }}\"/" "$FILE"
+          echo "Updated $FILE → tag: ${{ inputs.image_tag }}"
+          grep "tag:" "$FILE"
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-
-      - name: Package charts
+      - name: Commit and push
         run: |
-          mkdir -p packaged-charts
-          helm package helm/Application/kuberniq-server -d packaged-charts
-          helm package helm/Application/kuberniq-chat   -d packaged-charts
-
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#helm/}" >> "$GITHUB_OUTPUT"
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Helm Charts ${{ steps.version.outputs.VERSION }}
-          tag_name: ${{ github.ref_name }}
-          files: packaged-charts/*.tgz
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm/Application/${{ inputs.chart }}/values.yaml
+          git commit -m "chore(helm): update ${{ inputs.chart }} image tag to ${{ inputs.image_tag }} [skip ci]"
+          git push

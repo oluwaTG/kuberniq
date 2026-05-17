@@ -2,13 +2,16 @@ name: kuberniq-chat — Build & Push
 
 on:
   push:
-    tags:
-      - "chat/v*.*.*"
-  workflow_dispatch:
+    branches: [main]
+    paths:
+      - "kuberniq-chat/**"
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
+    outputs:
+      new_version: ${{ steps.tag.outputs.new_version }}
 
     steps:
       - name: Checkout
@@ -16,14 +19,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify tag is on main
-        run: |
-          git fetch origin main
-          if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
-            echo "❌ Tag must be on the main branch. Aborting."
-            exit 1
-          fi
-          echo "✅ Tag is on main."
+      # Auto-increments semver based on conventional commits:
+      #   fix: → patch bump (1.0.0 → 1.0.1)
+      #   feat: → minor bump (1.0.0 → 1.1.0)
+      #   BREAKING CHANGE → major bump (1.0.0 → 2.0.0)
+      - name: Bump version and create tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag_prefix: "chat-v"
+          default_bump: patch
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -34,25 +40,23 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Derives tags from the git tag, e.g. chat/v1.2.3 → 1.2.3, 1.2, 1, latest
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: elumole22/kuberniq-chat
-          tags: |
-            type=match,pattern=chat/v(.*),group=1
-            type=match,pattern=chat/v(\d+\.\d+),group=1
-            type=match,pattern=chat/v(\d+),group=1
-            type=raw,value=latest
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: ./kuberniq-chat
           file: ./kuberniq-chat/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # Tag with both the exact semver (e.g. 1.0.1) and latest
+          tags: |
+            elumole22/kuberniq-chat:${{ steps.tag.outputs.new_version }}
+            elumole22/kuberniq-chat:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  update-helm:
+    needs: build-and-push
+    uses: ./.github/workflows/helm.yml
+    with:
+      chart: kuberniq-chat
+      image_tag: ${{ needs.build-and-push.outputs.new_version }}
+    secrets: inherit

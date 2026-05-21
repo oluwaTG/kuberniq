@@ -9,7 +9,8 @@ var app = new CommandApp();
 app.Configure(config =>
 {
     config.SetApplicationName("kuberniq");
-    config.SetApplicationVersion("1.0.0");
+    config.SetApplicationVersion(
+        typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0");
     config.PropagateExceptions();
 
     config.AddCommand<LoginCommand>("login")

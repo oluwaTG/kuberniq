@@ -9,7 +9,7 @@ var app = new CommandApp();
 app.Configure(config =>
 {
     config.SetApplicationName("kuberniq");
-    config.SetApplicationVersion("1.0.0");
+    config.SetApplicationVersion("1.0.1");
     config.PropagateExceptions();
 
     config.AddCommand<LoginCommand>("login")
@@ -391,7 +391,7 @@ sealed class ClusterShowCommand : AsyncCommand<ClusterShowSettings>
                 {
                     var readyMark = node.Ready?.Equals("True", StringComparison.OrdinalIgnoreCase) == true
                         ? "[green]●[/]" : "[red]●[/]";
-                    grid.AddRow($"    [grey]{Markup.Escape(node.Name ?? ""),<16}[/]", readyMark);
+                    grid.AddRow($"    [grey]{Markup.Escape(node.Name ?? ""),-16}[/]", readyMark);
                 }
             }
         }

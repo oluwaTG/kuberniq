@@ -2,15 +2,23 @@ name: kuberniq-chat — Build & Push
 
 on:
   push:
-    tags:
-      - "chat/v*.*.*"
+    branches:
+      - main
     paths:
-      - "kuberniq-server/**"
+      - "kuberniq-chat/**"
   workflow_dispatch:
 
 jobs:
-  build-and-push:
+  # ── 1. Read version from VERSION file, push tag (skip if tag already exists) ─
+  tag:
+    name: Tag version
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      tag:     ${{ steps.version.outputs.TAG }}
+      skip:    ${{ steps.check.outputs.SKIP }}
 
     steps:
       - name: Checkout
@@ -18,14 +26,50 @@ jobs:
         with:
           fetch-depth: 0
 
-      # - name: Verify tag is on main
-      #   run: |
-      #     git fetch origin main
-      #     if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
-      #       echo "❌ Tag must be on the main branch. Aborting."
-      #       exit 1
-      #     fi
-      #     echo "✅ Tag is on main."
+      - name: Read version from kuberniq-chat/VERSION
+        id: version
+        run: |
+          VERSION=$(cat kuberniq-chat/VERSION | tr -d '[:space:]')
+          if [ -z "$VERSION" ]; then
+            echo "❌ Could not read version from kuberniq-chat/VERSION"
+            exit 1
+          fi
+          echo "VERSION=$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "TAG=chat/v$VERSION"   >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          TAG="chat/v${{ steps.version.outputs.VERSION }}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "⚠️  Tag $TAG already exists — this push did not bump the version. Skipping release."
+            echo "SKIP=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "✅ New version detected: $TAG"
+            echo "SKIP=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push tag
+        if: steps.check.outputs.SKIP == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.TAG }}"
+          git push origin "${{ steps.version.outputs.TAG }}"
+          echo "🏷️  Pushed ${{ steps.version.outputs.TAG }}"
+
+  # ── 2. Build & push Docker image ─────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push Docker image
+    needs: tag
+    if: needs.tag.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -36,16 +80,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Derives tags from the git tag, e.g. chat/v1.2.3 → 1.2.3, 1.2, 1, latest
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: elumole22/kuberniq-chat
           tags: |
-            type=match,pattern=chat/v(.*),group=1
-            type=match,pattern=chat/v(\d+\.\d+),group=1
-            type=match,pattern=chat/v(\d+),group=1
+            type=raw,value=${{ needs.tag.outputs.version }}
             type=raw,value=latest
 
       - name: Build and push

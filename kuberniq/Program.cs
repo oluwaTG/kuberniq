@@ -131,9 +131,9 @@ sealed class ClusterAddSettings : CommandSettings
     public string SaName { get; init; } = "kubeai";
 
     [CommandOption("--sa-namespace")]
-    [Description("Namespace for the ServiceAccount (default: kube-system)")]
-    [DefaultValue("kube-system")]
-    public string SaNamespace { get; init; } = "kube-system";
+    [Description("Namespace for the ServiceAccount (default: kuberniq-server, created if absent)")]
+    [DefaultValue("kuberniq-server")]
+    public string SaNamespace { get; init; } = "kuberniq-server";
 
     [CommandOption("--skip-rbac")]
     [Description("Skip ServiceAccount and RBAC creation (use when they already exist)")]

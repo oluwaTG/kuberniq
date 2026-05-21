@@ -2,8 +2,6 @@ name: kuberniq CLI — Release
 
 on:
   push:
-    tags:
-      - "cli/v*.*.*"
     branches:
       - main
     paths:
@@ -11,8 +9,60 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ── 1. Read version from csproj, push tag (skip if tag already exists) ───────
+  tag:
+    name: Tag version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      tag:     ${{ steps.version.outputs.TAG }}
+      skip:    ${{ steps.check.outputs.SKIP }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from kuberniq.csproj
+        id: version
+        run: |
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' kuberniq/kuberniq.csproj)
+          if [ -z "$VERSION" ]; then
+            echo "❌ Could not read <Version> from kuberniq/kuberniq.csproj"
+            exit 1
+          fi
+          echo "VERSION=$VERSION"      >> "$GITHUB_OUTPUT"
+          echo "TAG=cli/v$VERSION"     >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          TAG="cli/v${{ steps.version.outputs.VERSION }}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "⚠️  Tag $TAG already exists — this push did not bump the version. Skipping release."
+            echo "SKIP=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "✅ New version detected: $TAG"
+            echo "SKIP=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push tag
+        if: steps.check.outputs.SKIP == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.TAG }}"
+          git push origin "${{ steps.version.outputs.TAG }}"
+          echo "🏷️  Pushed ${{ steps.version.outputs.TAG }}"
+
+  # ── 2. Build all platform binaries ───────────────────────────────────────────
   build:
     name: Build ${{ matrix.rid }}
+    needs: tag
+    if: needs.tag.outputs.skip == 'false'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -29,17 +79,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Verify tag is on main
-        run: |
-          git fetch origin main
-          if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
-            echo "❌ Tag must be on the main branch. Aborting."
-            exit 1
-          fi
-          echo "✅ Tag is on main."
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
@@ -56,7 +95,6 @@ jobs:
       - name: Rename binary
         run: |
           SRC=dist/${{ matrix.rid }}/kuberniq
-          # Windows output already has .exe
           [ -f "${SRC}.exe" ] && SRC="${SRC}.exe"
           mv "$SRC" dist/${{ matrix.rid }}/${{ matrix.artifact }}
 
@@ -66,10 +104,14 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.rid }}/${{ matrix.artifact }}
 
+  # ── 3. Publish GitHub Release ─────────────────────────────────────────────────
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [tag, build]
+    if: needs.tag.outputs.skip == 'false'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts
@@ -78,15 +120,11 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#cli/}" >> "$GITHUB_OUTPUT"
-
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          name: kuberniq CLI ${{ steps.version.outputs.VERSION }}
-          tag_name: ${{ github.ref_name }}
+          name: kuberniq CLI ${{ needs.tag.outputs.version }}
+          tag_name: ${{ needs.tag.outputs.tag }}
           files: release-assets/**
           generate_release_notes: true
         env:

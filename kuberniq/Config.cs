@@ -3,9 +3,17 @@ using System.Text.Json;
 namespace Kuberniq;
 
 /// <summary>
+/// A cluster entry stored locally after a successful `kuberniq cluster add`.
+/// </summary>
+record LocalClusterEntry(string Name, bool IsLocal, string? Server = null);
+
+/// <summary>
 /// Saved MCP server connection — stored at ~/.kuberniq/config.json
 /// </summary>
-record KuberniqConfig(string ServerUrl, string? DefaultCluster = null);
+record KuberniqConfig(
+    string ServerUrl,
+    string? DefaultCluster = null,
+    List<LocalClusterEntry>? Clusters = null);
 
 static class KuberniqConfigManager
 {

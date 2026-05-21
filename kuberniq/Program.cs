@@ -214,6 +214,12 @@ sealed class ClusterAddCommand : AsyncCommand<ClusterAddSettings>
         AnsiConsole.MarkupLine("[green]✓[/]");
         AnsiConsole.WriteLine();
 
+        // ── Save cluster locally so `cluster list` works without auth ──────────
+        var updatedClusters = (cfg.Clusters ?? []).ToList();
+        updatedClusters.RemoveAll(c => c.Name.Equals(s.Name, StringComparison.OrdinalIgnoreCase));
+        updatedClusters.Add(new LocalClusterEntry(s.Name, IsLocal: false, Server: server));
+        KuberniqConfigManager.Save(cfg with { Clusters = updatedClusters });
+
         var panel = new Panel(
             $"[bold green]{s.Name}[/] is now registered with the MCP server.\n\n" +
             $"Append [cyan]?cluster={s.Name}[/] to any endpoint:\n" +
@@ -231,57 +237,46 @@ sealed class ClusterAddCommand : AsyncCommand<ClusterAddSettings>
 }
 
 // ── cluster list ───────────────────────────────────────────────────────────────
-sealed class ClusterListCommand : AsyncCommand
+sealed class ClusterListCommand : Command
 {
-    public override async Task<int> ExecuteAsync(CommandContext ctx)
+    public override int Execute(CommandContext ctx)
     {
-        var cfg = KuberniqConfigManager.LoadOrFail();
+        var cfg = KuberniqConfigManager.Load();
 
-        List<ClusterInfo> clusters;
-        try
-        {
-            using var http = new HttpClient();
-            clusters = await http.GetFromJsonAsync<List<ClusterInfo>>(
-                           $"{cfg.ServerUrl}/clusters",
-                           new System.Text.Json.JsonSerializerOptions
-                               { PropertyNameCaseInsensitive = true })
-                       ?? [];
-        }
-        catch (Exception ex)
-        {
-            AnsiConsole.MarkupLine($"[red]✗[/] Could not reach MCP server: {Markup.Escape(ex.Message)}");
-            return 1;
-        }
-
-        if (clusters.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[yellow]No clusters registered.[/]  Run [cyan]kuberniq cluster add <name>[/].");
-            return 0;
-        }
+        // Always include the implicit local cluster
+        var localEntry = new LocalClusterEntry("local", IsLocal: true, Server: "in-cluster");
+        var registered = cfg?.Clusters ?? [];
+        var clusters   = new[] { localEntry }.Concat(registered).ToList();
 
         var table = new Table()
-            .Title($"Clusters  ([grey]{Markup.Escape(cfg.ServerUrl)}[/])")
             .Border(TableBorder.Rounded)
             .AddColumn(new TableColumn("Name").LeftAligned())
             .AddColumn(new TableColumn("Type").Centered())
-            .AddColumn(new TableColumn("?cluster= query param").LeftAligned());
+            .AddColumn(new TableColumn("Server").LeftAligned())
+            .AddColumn(new TableColumn("Default").Centered());
 
         foreach (var c in clusters)
         {
             var type = c.IsLocal
                 ? "[blue]local (in-cluster)[/]"
                 : "[green]remote[/]";
-            var param = c.IsLocal
-                ? "[grey](omit for local)[/]"
-                : $"[cyan]?cluster={c.Name}[/]";
-            table.AddRow(c.Name, type, param);
+            var serverCol = c.IsLocal
+                ? "[grey]in-cluster[/]"
+                : $"[grey]{Markup.Escape(c.Server ?? "—")}[/]";
+            var isDefault = c.Name.Equals(
+                cfg?.DefaultCluster ?? "local", StringComparison.OrdinalIgnoreCase);
+            var defaultMark = isDefault ? "[cyan]✓[/]" : "";
+
+            table.AddRow(c.Name, type, serverCol, defaultMark);
         }
 
         AnsiConsole.Write(table);
+
+        if (cfg is null)
+            AnsiConsole.MarkupLine("\n[grey]Run [cyan]kuberniq login <url>[/] to connect to an MCP server, then [cyan]kuberniq cluster add <name>[/].[/]");
+
         return 0;
     }
-
-    record ClusterInfo(string Name, bool IsLocal);
 }
 
 // ── cluster show ───────────────────────────────────────────────────────────────
@@ -615,6 +610,15 @@ sealed class ClusterRemoveCommand : AsyncCommand<ClusterRemoveSettings>
         AnsiConsole.MarkupLine($"[green]✓[/] Cluster [bold]{s.Name}[/] removed.");
         AnsiConsole.MarkupLine("  Note: the ServiceAccount and RBAC in the target cluster are [grey]not[/] deleted.");
         AnsiConsole.MarkupLine("  Delete them manually if no longer needed.");
+
+        // Remove from local config
+        var updatedClusters = (cfg.Clusters ?? [])
+            .Where(c => !c.Name.Equals(s.Name, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var updatedDefault = cfg.DefaultCluster?.Equals(s.Name, StringComparison.OrdinalIgnoreCase) == true
+            ? null : cfg.DefaultCluster;
+        KuberniqConfigManager.Save(cfg with { Clusters = updatedClusters, DefaultCluster = updatedDefault });
+
         return 0;
     }
 }

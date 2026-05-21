@@ -1,26 +1,23 @@
 # kuberniq
 
-A CLI for registering and managing remote Kubernetes clusters with the [MCP server](../mcp-server/README.md).
+A CLI for registering and managing remote Kubernetes clusters with the [Kuberniq Server](../kuberniq-server/README.md).
 
-Modelled after `argocd cluster add` — one command sets up everything in the target clust### 7. Remove a cluster
-
-```bash
-kuberniq cluster remove prod
-```
-
-This calls `DELETE /clusters/prod` on the MCP server and removes the persisted Secret.  
-The `ServiceAccount` and `ClusterRole` in the target cluster are **not** deleted — remove them manually if no longer needed:
-
-```bash
-kubectl --context prod-aks delete clusterrolebinding kuberniq-mcp-reader
-kubectl --context prod-aks delete clusterrole       kuberniq-mcp-reader
-kubectl --context prod-aks delete sa kuberniq -n kube-system
-kubectl --context prod-aks delete secret kuberniq-kuberniq-token -n kube-system
-```
+Modelled after `argocd cluster add` — one command sets up everything in the target cluster and registers it with the MCP server so every endpoint gains `?cluster=<name>` routing.
 
 ---
 
-### 8. Log out with the MCP server so every endpoint gains `?cluster=<name>` routing.
+## Command Reference
+
+| Command | Description |
+|---|---|
+| `kuberniq login <url>` | Authenticate with an MCP server |
+| `kuberniq logout` | Remove the saved connection |
+| `kuberniq cluster add <name>` | Register a cluster with the MCP server |
+| `kuberniq cluster list` | List all registered clusters |
+| `kuberniq cluster show <name>` | Show K8s version, nodes, namespaces and health |
+| `kuberniq cluster ping <name>` | Check latency and reachability |
+| `kuberniq cluster set-default <name>` | Set the default cluster for all commands |
+| `kuberniq cluster remove <name>` | Unregister a cluster |
 
 ---
 
@@ -245,7 +242,7 @@ kubectl --context prod-aks delete secret kuberniq-kuberniq-token -n kube-system
 
 ---
 
-### 5. Log out
+### 8. Log out
 
 ```bash
 kuberniq logout

@@ -522,7 +522,24 @@ public static class ClusterRegistrar
         await proc.WaitForExitAsync(ct);
 
         if (proc.ExitCode != 0)
-            throw new Exception(stderr.Trim().Length > 0 ? stderr.Trim() : $"kubectl exited with code {proc.ExitCode}");
+        {
+            var msg = stderr.Trim().Length > 0 ? stderr.Trim() : $"kubectl exited with code {proc.ExitCode}";
+
+            // Provide actionable hints for well-known auth failures
+            if (msg.Contains("AADSTS70043") || msg.Contains("AADSTS70008") || msg.Contains("AADSTS700082"))
+                throw new Exception(
+                    $"Azure token has expired (AADSTS). Run [cyan]az login[/] to refresh your session, then retry.\n\nDetail: {msg}");
+
+            if (msg.Contains("AADSTS") )
+                throw new Exception(
+                    $"Azure authentication error. Run [cyan]az login[/] and ensure you have access to the cluster.\n\nDetail: {msg}");
+
+            if (msg.Contains("kubelogin") && msg.Contains("exit"))
+                throw new Exception(
+                    $"kubelogin failed. Ensure kubelogin is installed ([cyan]brew install Azure/kubelogin/kubelogin[/]) and run [cyan]az login[/].\n\nDetail: {msg}");
+
+            throw new Exception(msg);
+        }
 
         return stdout.Trim();
     }

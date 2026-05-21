@@ -6,7 +6,7 @@ Modelled after `argocd cluster add` — one command sets up everything in the ta
 
 ---
 
-## Command Reference
+## Command Reference 
 
 | Command | Description |
 |---|---|

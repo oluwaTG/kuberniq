@@ -2,6 +2,7 @@
 
 A CLI for registering and managing remote Kubernetes clusters with the [Kuberniq Server](../kuberniq-server/README.md).
 
+
 Modelled after `argocd cluster add` — one command sets up everything in the target cluster and registers it with the MCP server so every endpoint gains `?cluster=<name>` routing.
 
 ---

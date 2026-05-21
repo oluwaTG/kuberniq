@@ -1,0 +1,56 @@
+name: kuberniq CLI — Auto Tag on Merge
+
+# Fires when a PR labelled "release:cli" is merged into main.
+# Reads the version from kuberniq/kuberniq.csproj, pushes a cli/vX.Y.Z tag,
+# which then triggers the kuberniq-cli.yml release workflow automatically.
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+    paths:
+      - "kuberniq/**"
+
+jobs:
+  tag:
+    name: Push release tag
+    runs-on: ubuntu-latest
+    # Only run when the PR was actually merged (not just closed) AND carries the label
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'release:cli')
+
+    permissions:
+      contents: write   # needed to push the tag
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from kuberniq.csproj
+        id: version
+        run: |
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' kuberniq/kuberniq.csproj)
+          if [ -z "$VERSION" ]; then
+            echo "❌ Could not read <Version> from kuberniq/kuberniq.csproj"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "TAG=cli/v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag does not already exist
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.TAG }}" | grep -q .; then
+            echo "❌ Tag ${{ steps.version.outputs.TAG }} already exists. Bump <Version> in kuberniq.csproj before merging with the release:cli label."
+            exit 1
+          fi
+
+      - name: Push tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.TAG }}"
+          git push origin "${{ steps.version.outputs.TAG }}"
+          echo "✅ Tagged ${{ steps.version.outputs.TAG }} — kuberniq-cli release workflow will start shortly."

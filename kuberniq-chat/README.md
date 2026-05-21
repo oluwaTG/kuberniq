@@ -1,7 +1,7 @@
 # MCP Chatbot
 
 An AI-powered Kubernetes assistant built with Streamlit and GPT-4o.  
-Answers are grounded entirely in **live cluster data** fetched from the [MCP Server](../mcp-server/README.md) — no hallucinated pod names, no stale state.
+Answers are grounded entirely in **live cluster data** fetched from the [Kuberniq MCP Server](../kuberniq-server/README.md) — no hallucinated pod names, no stale state.
 
 ---
 
@@ -20,7 +20,7 @@ Answers are grounded entirely in **live cluster data** fetched from the [MCP Ser
 
 ## Prerequisites
 
-- A running [MCP Server](../mcp-server/README.md) reachable from the chatbot
+- A running [MCP Server](../kuberniq-server/README.md) reachable from the chatbot
 - An OpenAI API key
 
 ---
@@ -28,7 +28,7 @@ Answers are grounded entirely in **live cluster data** fetched from the [MCP Ser
 ## Quick Local Run
 
 ```bash
-cd mcp-chatbot
+cd kuberniq-chat
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -55,8 +55,8 @@ Open `http://localhost:8501` in your browser.
 ```bash
 docker run -p 8501:8501 \
   -e OPENAI_API_KEY=sk-... \
-  -e MCP_SERVER_URL=http://your-mcp-server:8080 \
-  elumole22/mcp-chatbot:1.0.0
+  -e MCP_SERVER_URL=http://your-kuberniq-server:8080 \
+  elumole22/kuberniq-chat:1.0.0
 ```
 
 ---
@@ -66,9 +66,9 @@ docker run -p 8501:8501 \
 ### 1. Create the secret (once per namespace)
 
 ```bash
-kubectl create secret generic mcp-chatbot-secrets \
+kubectl create secret generic kuberniq-chat-secrets \
   --from-literal=OPENAI_API_KEY=sk-... \
-  -n mcp-chatbot
+  -n kuberniq-chat
 ```
 
 ### 2. Install the chart
@@ -77,16 +77,16 @@ kubectl create secret generic mcp-chatbot-secrets \
 git clone https://github.com/oluwaTG/kuberniq.git
 cd kuberniq
 
-helm upgrade --install mcp-chatbot helm/Application/mcp-chatbot \
-  --namespace mcp-chatbot \
+helm upgrade --install kuberniq-chat helm/Application/kuberniq-chat \
+  --namespace kuberniq-chat \
   --create-namespace \
-  --set mcpServerUrl=http://mcp-server.mcp-server.svc.cluster.local:8080
+  --set mcpServerUrl=http://kuberniq-server.kuberniq-server.svc.cluster.local:8080
 ```
 
 ### 3. Access the UI
 
 ```bash
-kubectl port-forward svc/mcp-chatbot 8501:8501 -n mcp-chatbot
+kubectl port-forward svc/kuberniq-chat 8501:8501 -n kuberniq-chat
 ```
 
 Then open `http://localhost:8501`.
@@ -96,8 +96,8 @@ Then open `http://localhost:8501`.
 | Value | Default | Description |
 |---|---|---|
 | `image.tag` | `1.0.0` | Chatbot image version |
-| `mcpServerUrl` | `http://mcp-server.mcp-server.svc.cluster.local:8080` | Internal MCP Server URL |
-| `openaiSecretName` | `mcp-chatbot-secrets` | Name of the Kubernetes Secret holding the API key |
+| `mcpServerUrl` | `http://kuberniq-server.kuberniq-server.svc.cluster.local:8080` | Internal MCP Server URL |
+| `openaiSecretName` | `kuberniq-chat-secrets` | Name of the Kubernetes Secret holding the API key |
 | `openaiSecretKey` | `OPENAI_API_KEY` | Key name inside the Secret |
 | `ingress.enabled` | `false` | Expose the UI via Ingress |
 | `ingress.tls` | `[]` | TLS config for external access |

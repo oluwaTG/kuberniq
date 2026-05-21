@@ -6,13 +6,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/install.sh | bash
 #
 # To install a specific version:
-#   curl -fsSL .../install.sh | KUBEAI_VERSION=kuberniq/v1.0.0 bash
+#   curl -fsSL .../install.sh | KUBERNIQ_VERSION=kuberniq/v1.0.0 bash
 # =============================================================================
 set -euo pipefail
 
 REPO="oluwaTG/kuberniq"
 BINARY="kuberniq"
-INSTALL_DIR="${KUBEAI_INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${KUBERNIQ_INSTALL_DIR:-/usr/local/bin}"
 
 # ── Detect OS and architecture ────────────────────────────────────────────────
 OS="$(uname -s)"
@@ -41,25 +41,25 @@ esac
 RID="${OS_KEY}-${ARCH_KEY}"
 
 # ── Resolve version ───────────────────────────────────────────────────────────
-if [[ -z "${KUBEAI_VERSION:-}" ]]; then
+if [[ -z "${KUBERNIQ_VERSION:-}" ]]; then
   echo "Fetching latest kuberniq release..."
-  KUBEAI_VERSION=$(
+  KUBERNIQ_VERSION=$(
     curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
     | grep '"tag_name"' \
     | sed 's/.*"tag_name": "\(.*\)".*/\1/'
   )
-  if [[ -z "$KUBEAI_VERSION" ]]; then
+  if [[ -z "$KUBERNIQ_VERSION" ]]; then
     echo "❌  Could not determine the latest release tag."
-    echo "    Set KUBEAI_VERSION manually, e.g.:"
-    echo "    KUBEAI_VERSION=kuberniq/v1.0.0 bash install.sh"
+    echo "    Set KUBERNIQ_VERSION manually, e.g.:"
+    echo "    KUBERNIQ_VERSION=kuberniq/v1.0.0 bash install.sh"
     exit 1
   fi
 fi
 
-echo "Installing kuberniq ${KUBEAI_VERSION} for ${RID}..."
+echo "Installing kuberniq ${KUBERNIQ_VERSION} for ${RID}..."
 
 # ── Download ──────────────────────────────────────────────────────────────────
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${KUBEAI_VERSION}/kuberniq-${RID}"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${KUBERNIQ_VERSION}/kuberniq-${RID}"
 TMP_FILE="$(mktemp)"
 
 if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"; then

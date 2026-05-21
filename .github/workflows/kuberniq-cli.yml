@@ -70,7 +70,6 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/cli/')
 
     steps:
       - name: Download all artifacts

@@ -5,7 +5,7 @@ namespace Kuberniq;
 /// <summary>
 /// Saved MCP server connection — stored at ~/.kuberniq/config.json
 /// </summary>
-record KuberniqConfig(string ServerUrl);
+record KuberniqConfig(string ServerUrl, string? DefaultCluster = null);
 
 static class KuberniqConfigManager
 {

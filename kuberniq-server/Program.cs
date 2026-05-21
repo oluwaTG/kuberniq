@@ -59,6 +59,12 @@ var clusterRegistry = new Dictionary<string, Kubernetes>(StringComparer.OrdinalI
     ["local"] = CreateLocalClient()
 };
 
+// Parallel registry: cluster name → API server URL (for display in GET /clusters/{name})
+var clusterServerUrls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["local"] = "in-cluster"
+};
+
 // On startup, re-hydrate any cluster Secrets that were persisted in earlier runs.
 try
 {
@@ -76,6 +82,7 @@ try
                            ? System.Text.Encoding.UTF8.GetString(s.Data["caData"]) : "";
             var tok    = System.Text.Encoding.UTF8.GetString(s.Data["token"]);
             clusterRegistry[name] = CreateRemoteClient(server, ca, tok);
+            clusterServerUrls[name] = server;
             Console.WriteLine($"[MCP] Loaded cluster '{name}' from secret.");
         }
         catch (Exception ex)
@@ -159,6 +166,24 @@ app.MapGet("/clusters", () =>
     return Results.Ok(result);
 });
 
+// Return details for a single registered cluster.
+app.MapGet("/clusters/{name}", (string name) =>
+{
+    if (!clusterRegistry.ContainsKey(name))
+        return Results.NotFound(new { error = $"Cluster '{name}' not found. Run 'kuberniq cluster list' to see registered clusters." });
+
+    var isLocal = name.Equals("local", StringComparison.OrdinalIgnoreCase);
+    clusterServerUrls.TryGetValue(name, out var serverUrl);
+
+    return Results.Ok(new
+    {
+        name,
+        isLocal,
+        server    = isLocal ? "in-cluster" : (serverUrl ?? "unknown"),
+        queryParam = isLocal ? null : $"?cluster={name}"
+    });
+});
+
 // Register a new remote cluster.
 // Body: { "name": "prod", "server": "https://...", "caData": "<base64>", "token": "<sa-token>" }
 // All fields except caData are required. caData can be omitted to skip TLS verification.
@@ -222,6 +247,7 @@ app.MapPost("/clusters", async (RegisterClusterRequest req) =>
 
     // 3. Hot-register the client — immediately available to all endpoints
     clusterRegistry[req.Name] = remoteClient;
+    clusterServerUrls[req.Name] = req.Server;
     Console.WriteLine($"[MCP] Registered cluster '{req.Name}' → {req.Server}");
 
     return Results.Ok(new { registered = req.Name, server = req.Server,
@@ -235,6 +261,7 @@ app.MapDelete("/clusters/{name}", async (string name) =>
         return Results.BadRequest(new { error = "Cannot remove the local cluster" });
 
     clusterRegistry.Remove(name);
+    clusterServerUrls.Remove(name);
 
     // Delete the persisted Secret so it isn't re-loaded on restart
     try

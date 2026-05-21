@@ -1,8 +1,23 @@
 # kuberniq
 
-A CLI for registering and managing remote Kubernetes clusters with the [MCP server](../mcp-server/README.md).
+A CLI for registering and managing remote Kubernetes clusters with the [Kuberniq Server](../kuberniq-server/README.md).
 
 Modelled after `argocd cluster add` — one command sets up everything in the target cluster and registers it with the MCP server so every endpoint gains `?cluster=<name>` routing.
+
+---
+
+## Command Reference
+
+| Command | Description |
+|---|---|
+| `kuberniq login <url>` | Authenticate with an MCP server |
+| `kuberniq logout` | Remove the saved connection |
+| `kuberniq cluster add <name>` | Register a cluster with the MCP server |
+| `kuberniq cluster list` | List all registered clusters |
+| `kuberniq cluster show <name>` | Show K8s version, nodes, namespaces and health |
+| `kuberniq cluster ping <name>` | Check latency and reachability |
+| `kuberniq cluster set-default <name>` | Set the default cluster for all commands |
+| `kuberniq cluster remove <name>` | Unregister a cluster |
 
 ---
 
@@ -123,7 +138,93 @@ kuberniq cluster list
 
 ---
 
-### 4. Remove a cluster
+### 4. Show cluster details
+
+```bash
+kuberniq cluster show prod
+```
+
+Queries the MCP server and the cluster in parallel and renders a full summary:
+
+```
+╭─ Cluster: prod ──────────────────────────────────────╮
+│                                                       │
+│  Name              prod                               │
+│  Type              remote                             │
+│  Server            https://prod-api.example.com       │
+│  Status            ✓ reachable                        │
+│  K8s Version       v1.29.3                            │
+│  Nodes             3/3 Ready                          │
+│    node-1          ●                                  │
+│    node-2          ●                                  │
+│    node-3          ●                                  │
+│  Namespaces        12                                 │
+│  Query param       ?cluster=prod                      │
+│                                                       │
+╰───────────────────────────────────────────────────────╯
+
+Namespaces: default, kube-system, kube-public, payments, ...
+```
+
+---
+
+### 5. Ping a cluster
+
+```bash
+kuberniq cluster ping prod
+
+# Send more probes
+kuberniq cluster ping prod --count 10
+```
+
+Sends sequential probes through the MCP server to the cluster's `/cluster/info` endpoint and prints per-probe latency plus a summary:
+
+```
+Pinging cluster prod via http://mcp-server.example.com...
+
+  seq= 1  ✓  42 ms
+  seq= 2  ✓  39 ms
+  seq= 3  ✓  44 ms
+  seq= 4  ✓  41 ms
+
+╭──────┬──────────┬──────┬────────┬────────┬────────╮
+│ Sent │ Received │ Lost │  Min   │  Avg   │  Max   │
+├──────┼──────────┼──────┼────────┼────────┼────────┤
+│  4   │    4     │  0%  │ 39 ms  │ 41 ms  │ 44 ms  │
+╰──────┴──────────┴──────┴────────┴────────┴────────╯
+```
+
+Options:
+
+| Flag | Default | Description |
+|---|---|---|
+| `-n`, `--count` | `4` | Number of probes to send |
+
+---
+
+### 6. Set the default cluster
+
+```bash
+kuberniq cluster set-default prod
+```
+
+Saves the default cluster to `~/.kuberniq/config.json`. Cluster commands will target this cluster automatically without requiring `?cluster=` overrides.
+
+```
+✓ Default cluster set to prod.
+  All cluster commands will now target prod unless overridden.
+  Reset anytime with kuberniq cluster set-default local
+```
+
+Reset to the in-cluster (local) client:
+
+```bash
+kuberniq cluster set-default local
+```
+
+---
+
+### 7. Remove a cluster
 
 ```bash
 kuberniq cluster remove prod
@@ -141,7 +242,7 @@ kubectl --context prod-aks delete secret kuberniq-kuberniq-token -n kube-system
 
 ---
 
-### 5. Log out
+### 8. Log out
 
 ```bash
 kuberniq logout

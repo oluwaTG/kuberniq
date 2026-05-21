@@ -7,6 +7,9 @@ namespace Kuberniq;
 /// </summary>
 record LocalClusterEntry(string Name, bool IsLocal, string? Server = null);
 
+/// <summary>Cluster summary as returned by GET /clusters on the MCP server.</summary>
+record ClusterInfo(string Name, bool IsLocal);
+
 /// <summary>
 /// Saved MCP server connection — stored at ~/.kuberniq/config.json
 /// </summary>

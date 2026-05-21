@@ -158,11 +158,23 @@ sealed class ClusterAddCommand : AsyncCommand<ClusterAddSettings>
                     "Pass [cyan]--context <name>[/] explicitly.");
                 return 1;
             }
-            context = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Select the [cyan]kubeconfig context[/] for [bold]" + s.Name + "[/]:")
-                    .PageSize(10)
-                    .AddChoices(contexts));
+
+            // Auto-select if the friendly name matches a context exactly — no prompt needed
+            var exactMatch = contexts.FirstOrDefault(c =>
+                c.Equals(s.Name, StringComparison.OrdinalIgnoreCase));
+            if (exactMatch is not null)
+            {
+                context = exactMatch;
+                AnsiConsole.MarkupLine($"  Using context [grey]{context}[/] (matched cluster name)");
+            }
+            else
+            {
+                context = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("Select the [cyan]kubeconfig context[/] for [bold]" + s.Name + "[/]:")
+                        .PageSize(10)
+                        .AddChoices(contexts));
+            }
         }
 
         // ── Set up RBAC + token in target cluster ──────────────────────────────
@@ -237,14 +249,17 @@ sealed class ClusterAddCommand : AsyncCommand<ClusterAddSettings>
 }
 
 // ── cluster list ───────────────────────────────────────────────────────────────
-sealed class ClusterListCommand : Command
+sealed class ClusterListSettings : CommandSettings { }
+
+sealed class ClusterListCommand : Command<ClusterListSettings>
 {
-    public override int Execute(CommandContext ctx)
+    public override int Execute(CommandContext ctx, ClusterListSettings _)
     {
         var cfg = KuberniqConfigManager.Load();
 
-        // Always include the implicit local cluster
-        var localEntry = new LocalClusterEntry("local", IsLocal: true, Server: "in-cluster");
+        // Use the actual current kubeconfig context as the local cluster display name
+        var localName = ClusterRegistrar.GetCurrentContext() ?? "local";
+        var localEntry = new LocalClusterEntry(localName, IsLocal: true, Server: "in-cluster");
         var registered = cfg?.Clusters ?? [];
         var clusters   = new[] { localEntry }.Concat(registered).ToList();
 
@@ -298,18 +313,44 @@ sealed class ClusterShowCommand : AsyncCommand<ClusterShowSettings>
         using var http = new HttpClient();
 
         // ── 1. Basic cluster record ────────────────────────────────────────────
+        // GET /clusters/{name} was added in a later server version; fall back to
+        // GET /clusters if the server returns 404 or 405 (older deployment).
         ClusterDetail? detail;
         try
         {
             var resp = await http.GetAsync($"{cfg.ServerUrl}/clusters/{s.Name}");
-            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound ||
+                resp.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed)
+            {
+                // Older server — fall back to listing all clusters and matching by name
+                var allResp = await http.GetAsync($"{cfg.ServerUrl}/clusters");
+                allResp.EnsureSuccessStatusCode();
+                var all = await allResp.Content
+                    .ReadFromJsonAsync<List<ClusterInfo>>(JsonOpts) ?? [];
+                var match = all.FirstOrDefault(c =>
+                    c.Name.Equals(s.Name, StringComparison.OrdinalIgnoreCase));
+                if (match is null)
+                {
+                    AnsiConsole.MarkupLine($"[red]✗[/] Cluster [bold]{s.Name}[/] is not registered.");
+                    AnsiConsole.MarkupLine("  Run [cyan]kuberniq cluster list[/] to see registered clusters.");
+                    return 1;
+                }
+                detail = new ClusterDetail(match.Name, match.IsLocal,
+                    match.IsLocal ? "in-cluster" : null,
+                    match.IsLocal ? null : $"?cluster={match.Name}");
+            }
+            else if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 AnsiConsole.MarkupLine($"[red]✗[/] Cluster [bold]{s.Name}[/] is not registered.");
                 AnsiConsole.MarkupLine("  Run [cyan]kuberniq cluster list[/] to see registered clusters.");
                 return 1;
             }
-            resp.EnsureSuccessStatusCode();
-            detail = await resp.Content.ReadFromJsonAsync<ClusterDetail>(JsonOpts);
+            else
+            {
+                resp.EnsureSuccessStatusCode();
+                detail = await resp.Content.ReadFromJsonAsync<ClusterDetail>(JsonOpts);
+            }
         }
         catch (Exception ex)
         {

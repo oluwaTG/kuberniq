@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using k8s;
 using k8s.Models;
@@ -25,11 +26,18 @@ public static class ClusterRegistrar
         IProgress<string> progress,
         CancellationToken ct = default)
     {
-        // ── Connect to the target cluster using the specified kubeconfig context ──
         var kubeconfigPath = Environment.GetEnvironmentVariable("KUBECONFIG")
             ?? Path.Combine(
                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                    ".kube", "config");
+
+        // Cloud clusters (AKS, GKE, EKS) use exec-based credentials (kubelogin, gke-gcloud-auth-plugin, etc.)
+        // The .NET SDK does not execute these plugins — delegate entirely to kubectl in that case.
+        if (HasExecCredentials(context, kubeconfigPath))
+        {
+            progress.Report("Exec credentials detected — using kubectl for authentication");
+            return await SetupWithKubectlAsync(context, saName, saNamespace, skipRbac, progress, ct);
+        }
 
         var clientCfg = KubernetesClientConfiguration.BuildConfigFromConfigFile(
             new FileInfo(kubeconfigPath), context);
@@ -267,6 +275,21 @@ public static class ClusterRegistrar
         ]
     };
 
+    /// <summary>Returns the current-context name from kubeconfig (for display in cluster list).</summary>
+    public static string? GetCurrentContext()
+    {
+        try
+        {
+            var kubeconfigPath = Environment.GetEnvironmentVariable("KUBECONFIG")
+                ?? Path.Combine(
+                       Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                       ".kube", "config");
+            var raw = KubernetesClientConfiguration.LoadKubeConfig(new FileInfo(kubeconfigPath));
+            return raw.CurrentContext;
+        }
+        catch { return null; }
+    }
+
     /// <summary>List kubeconfig context names for the interactive selector.</summary>
     public static List<string> ListKubeconfigContexts()
     {
@@ -281,5 +304,241 @@ public static class ClusterRegistrar
             return raw.Contexts?.Select(c => c.Name).ToList() ?? [];
         }
         catch { return []; }
+    }
+
+    // ── Exec-credential (cloud cluster) support ───────────────────────────────
+
+    /// <summary>
+    /// Returns true when the kubeconfig context uses an exec plugin (kubelogin, gke-gcloud-auth-plugin, etc.)
+    /// The .NET SDK does not execute these plugins, so kubectl subprocess is used instead.
+    /// Detection is done by scanning the raw YAML for an "exec:" key under the matching user.
+    /// </summary>
+    static bool HasExecCredentials(string context, string kubeconfigPath)
+    {
+        try
+        {
+            // Read the raw kubeconfig and look for "exec:" under the user entry for this context.
+            // This avoids relying on SDK model property names which differ across versions.
+            var yaml = File.ReadAllText(kubeconfigPath);
+
+            // Quick pre-check — if "exec:" doesn't appear anywhere, no exec credentials at all
+            if (!yaml.Contains("exec:", StringComparison.OrdinalIgnoreCase)) return false;
+
+            var raw = KubernetesClientConfiguration.LoadKubeConfig(new FileInfo(kubeconfigPath));
+            var ctx = raw.Contexts?.FirstOrDefault(c => c.Name == context);
+            if (ctx is null) return false;
+
+            var userName = ctx.ContextDetails.User;
+
+            // Find the user's block in the YAML and check if it contains "exec:"
+            // This is a pragmatic scan — good enough for all real-world kubeconfigs
+            var lines   = yaml.Split('\n');
+            bool inUser = false;
+            int  indent = 0;
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+
+                if (!inUser)
+                {
+                    // Match "  - name: <userName>" inside the users: block
+                    if (line.TrimStart().StartsWith("- name:") &&
+                        line.Contains(userName))
+                    {
+                        inUser = true;
+                        indent = line.Length - line.TrimStart().Length;
+                    }
+                }
+                else
+                {
+                    // Stop if we've left this user's block (new list item or back to root)
+                    var trimmed = line.TrimStart();
+                    if (trimmed.Length > 0 && trimmed.StartsWith("- ") &&
+                        (line.Length - trimmed.Length) <= indent)
+                        break;
+
+                    if (trimmed.StartsWith("exec:"))
+                        return true;
+                }
+            }
+            return false;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Full cluster setup using kubectl subprocesses — used for AKS, GKE, EKS and any
+    /// other cluster whose kubeconfig context uses exec-based credential plugins.
+    /// </summary>
+    static async Task<(string server, string caData, string token)> SetupWithKubectlAsync(
+        string context, string saName, string saNamespace, bool skipRbac,
+        IProgress<string> progress, CancellationToken ct)
+    {
+        if (!skipRbac)
+        {
+            progress.Report($"Ensuring namespace '{saNamespace}' exists");
+            await KubectlApplyAsync($"""
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: {saNamespace}
+                """, context, ct);
+
+            progress.Report($"Creating ServiceAccount '{saName}'");
+            await KubectlApplyAsync($"""
+                apiVersion: v1
+                kind: ServiceAccount
+                metadata:
+                  name: {saName}
+                  namespace: {saNamespace}
+                  labels:
+                    app.kubernetes.io/managed-by: kuberniq
+                """, context, ct);
+
+            progress.Report("Applying ClusterRole 'kuberniq-mcp-reader'");
+            await KubectlApplyAsync("""
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: ClusterRole
+                metadata:
+                  name: kuberniq-mcp-reader
+                  labels:
+                    app.kubernetes.io/managed-by: kuberniq
+                rules:
+                - apiGroups: [""]
+                  resources: ["namespaces","pods","services","endpoints","events","configmaps",
+                               "persistentvolumes","persistentvolumeclaims","nodes",
+                               "resourcequotas","serviceaccounts","replicationcontrollers"]
+                  verbs: ["get","list","watch"]
+                - apiGroups: ["apps"]
+                  resources: ["deployments","replicasets","statefulsets","daemonsets"]
+                  verbs: ["get","list","watch"]
+                - apiGroups: ["batch"]
+                  resources: ["jobs","cronjobs"]
+                  verbs: ["get","list","watch"]
+                - apiGroups: ["networking.k8s.io"]
+                  resources: ["ingresses","networkpolicies"]
+                  verbs: ["get","list","watch"]
+                - apiGroups: ["autoscaling"]
+                  resources: ["horizontalpodautoscalers"]
+                  verbs: ["get","list","watch"]
+                - apiGroups: ["storage.k8s.io"]
+                  resources: ["storageclasses","volumeattachments"]
+                  verbs: ["get","list","watch"]
+                - apiGroups: ["policy"]
+                  resources: ["poddisruptionbudgets"]
+                  verbs: ["get","list","watch"]
+                """, context, ct);
+
+            progress.Report("Applying ClusterRoleBinding");
+            await KubectlApplyAsync($"""
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: ClusterRoleBinding
+                metadata:
+                  name: kuberniq-mcp-reader
+                  labels:
+                    app.kubernetes.io/managed-by: kuberniq
+                roleRef:
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: ClusterRole
+                  name: kuberniq-mcp-reader
+                subjects:
+                - kind: ServiceAccount
+                  name: {saName}
+                  namespace: {saNamespace}
+                """, context, ct);
+        }
+
+        var tokenSecretName = $"{saName}-kuberniq-token";
+        progress.Report($"Ensuring token Secret '{tokenSecretName}'");
+        await KubectlApplyAsync($"""
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: {tokenSecretName}
+              namespace: {saNamespace}
+              annotations:
+                kubernetes.io/service-account.name: {saName}
+            type: kubernetes.io/service-account-token
+            """, context, ct);
+
+        // Wait for the token controller to populate the token
+        progress.Report("Waiting for token to be issued by the token controller");
+        string token = "";
+        for (int i = 0; i < 30; i++)
+        {
+            try
+            {
+                var b64 = await KubectlAsync(context, ct,
+                    "get", "secret", tokenSecretName,
+                    "-n", saNamespace,
+                    "-o", "jsonpath={.data.token}");
+                if (!string.IsNullOrWhiteSpace(b64))
+                {
+                    token = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(b64));
+                    break;
+                }
+            }
+            catch { }
+            await Task.Delay(2000, ct);
+        }
+        if (string.IsNullOrWhiteSpace(token))
+            throw new Exception("Timed out waiting for ServiceAccount token.");
+
+        var server = await KubectlAsync(context, ct,
+            "config", "view", "--context", context, "--minify",
+            "-o", "jsonpath={.clusters[0].cluster.server}");
+
+        string caData = "";
+        try
+        {
+            caData = await KubectlAsync(context, ct,
+                "config", "view", "--context", context, "--minify", "--raw",
+                "-o", "jsonpath={.clusters[0].cluster.certificate-authority-data}");
+        }
+        catch { /* CA data is optional */ }
+
+        return (server, caData, token);
+    }
+
+    /// <summary>Run kubectl with the given context and args; returns stdout.</summary>
+    static async Task<string> KubectlAsync(string context, CancellationToken ct, params string[] args)
+    {
+        var psi = new ProcessStartInfo("kubectl")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false
+        };
+        psi.ArgumentList.Add("--context");
+        psi.ArgumentList.Add(context);
+        foreach (var a in args) psi.ArgumentList.Add(a);
+
+        using var proc = Process.Start(psi)
+            ?? throw new Exception("Failed to start kubectl. Ensure kubectl is installed and on your PATH.");
+
+        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+        var stderr = await proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+
+        if (proc.ExitCode != 0)
+            throw new Exception(stderr.Trim().Length > 0 ? stderr.Trim() : $"kubectl exited with code {proc.ExitCode}");
+
+        return stdout.Trim();
+    }
+
+    /// <summary>Write YAML to a temp file and run kubectl apply -f, then clean up.</summary>
+    static async Task KubectlApplyAsync(string yaml, string context, CancellationToken ct)
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"kuberniq-{Guid.NewGuid():N}.yaml");
+        try
+        {
+            await File.WriteAllTextAsync(tmp, yaml, ct);
+            await KubectlAsync(context, ct, "apply", "-f", tmp);
+        }
+        finally
+        {
+            try { File.Delete(tmp); } catch { }
+        }
     }
 }

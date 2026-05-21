@@ -391,7 +391,7 @@ sealed class ClusterShowCommand : AsyncCommand<ClusterShowSettings>
                 {
                     var readyMark = node.Ready?.Equals("True", StringComparison.OrdinalIgnoreCase) == true
                         ? "[green]●[/]" : "[red]●[/]";
-                    grid.AddRow($"    [grey]{Markup.Escape(node.Name ?? ""),<16}[/]", readyMark);
+                    grid.AddRow($"    [grey]{Markup.Escape(node.Name ?? ""),-16}[/]", readyMark);
                 }
             }
         }

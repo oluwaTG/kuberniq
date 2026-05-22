@@ -237,6 +237,9 @@ app.MapPost("/clusters", async (RegisterClusterRequest req) =>
         // Upsert: silently replace if it already exists
         try { await clusterRegistry["local"].DeleteNamespacedSecretAsync(secretName, mcpNamespace); }
         catch { /* did not exist */ }
+
+        // Brief yield so the API server processes the delete before we create
+        await Task.Delay(300);
         await clusterRegistry["local"].CreateNamespacedSecretAsync(secret, mcpNamespace);
     }
     catch (Exception ex)

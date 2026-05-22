@@ -451,6 +451,12 @@ public static class ClusterRegistrar
 
         var tokenSecretName = $"{saName}-kuberniq-token";
         progress.Report($"Ensuring token Secret '{tokenSecretName}'");
+
+        // service-account-token Secrets are owned by the token controller — applying over an
+        // existing one can produce a conflict. Delete first so re-registration always works cleanly.
+        try { await KubectlAsync(context, ct, "delete", "secret", tokenSecretName, "-n", saNamespace, "--ignore-not-found"); }
+        catch { /* best-effort */ }
+
         await KubectlApplyAsync($"""
             apiVersion: v1
             kind: Secret

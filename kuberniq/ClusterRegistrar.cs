@@ -266,7 +266,7 @@ public static class ClusterRegistrar
         },
         Subjects =
         [
-            new V1Subject
+            new Rbacv1Subject
             {
                 Kind             = "ServiceAccount",
                 Name             = saName,

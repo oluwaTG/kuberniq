@@ -558,4 +558,44 @@ public static class ClusterRegistrar
             try { File.Delete(tmp); } catch { }
         }
     }
+
+    /// <summary>
+    /// Delete all Kubernetes resources that were created by <see cref="SetupAsync"/>.
+    /// Silently skips resources that are already gone (404).
+    /// </summary>
+    public static async Task TeardownAsync(
+        string context,
+        string saName,
+        string saNamespace,
+        IProgress<string> progress,
+        CancellationToken ct = default)
+    {
+        // Always use kubectl — exec-credential clusters (AKS/GKE/EKS) can't use the SDK directly.
+        async Task Delete(params string[] args)
+        {
+            try   { await KubectlAsync(context, ct, args); }
+            catch (Exception ex) when (ex.Message.Contains("NotFound") || ex.Message.Contains("not found")) { }
+        }
+
+        var tokenSecretName = $"{saName}-kuberniq-token";
+
+        progress.Report($"Deleting Secret '{tokenSecretName}'");
+        await Delete("delete", "secret", tokenSecretName, "-n", saNamespace, "--ignore-not-found");
+
+        progress.Report($"Deleting ServiceAccount '{saName}'");
+        await Delete("delete", "serviceaccount", saName, "-n", saNamespace, "--ignore-not-found");
+
+        progress.Report("Deleting ClusterRoleBinding 'kuberniq-mcp-reader'");
+        await Delete("delete", "clusterrolebinding", "kuberniq-mcp-reader", "--ignore-not-found");
+
+        progress.Report("Deleting ClusterRole 'kuberniq-mcp-reader'");
+        await Delete("delete", "clusterrole", "kuberniq-mcp-reader", "--ignore-not-found");
+
+        // Delete the namespace only if it was the default kuberniq-managed one
+        if (saNamespace == "kuberniq-server")
+        {
+            progress.Report($"Deleting namespace '{saNamespace}'");
+            await Delete("delete", "namespace", saNamespace, "--ignore-not-found");
+        }
+    }
 }

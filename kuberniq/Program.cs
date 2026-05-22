@@ -617,6 +617,20 @@ sealed class ClusterRemoveSettings : CommandSettings
     [CommandArgument(0, "<name>")]
     [Description("Name of the cluster to unregister")]
     public string Name { get; init; } = "";
+
+    [CommandOption("--sa-name")]
+    [Description("ServiceAccount name that was created during add (default: kubeai)")]
+    [DefaultValue("kubeai")]
+    public string SaName { get; init; } = "kubeai";
+
+    [CommandOption("--sa-namespace")]
+    [Description("Namespace the ServiceAccount lives in (default: kuberniq-server)")]
+    [DefaultValue("kuberniq-server")]
+    public string SaNamespace { get; init; } = "kuberniq-server";
+
+    [CommandOption("--skip-k8s-cleanup")]
+    [Description("Skip deleting the ServiceAccount and RBAC from the target cluster")]
+    public bool SkipK8sCleanup { get; init; }
 }
 
 sealed class ClusterRemoveCommand : AsyncCommand<ClusterRemoveSettings>
@@ -631,6 +645,57 @@ sealed class ClusterRemoveCommand : AsyncCommand<ClusterRemoveSettings>
             return 0;
         }
 
+        // ── 1. Delete Kubernetes resources in the target cluster ───────────────
+        if (!s.SkipK8sCleanup)
+        {
+            // Resolve the kubeconfig context for this cluster
+            var entry = (cfg.Clusters ?? [])
+                .FirstOrDefault(c => c.Name.Equals(s.Name, StringComparison.OrdinalIgnoreCase));
+
+            // Best-effort: use the friendly name as context (matches what `cluster add` defaulted to)
+            var context = s.Name;
+            var allContexts = ClusterRegistrar.ListKubeconfigContexts();
+            if (!allContexts.Contains(context, StringComparer.OrdinalIgnoreCase))
+            {
+                // Fall back to interactive selection if the name isn't a known context
+                if (allContexts.Count > 0)
+                {
+                    context = AnsiConsole.Prompt(
+                        new SelectionPrompt<string>()
+                            .Title($"Select the [cyan]kubeconfig context[/] that was used when adding [bold]{s.Name}[/]:")
+                            .PageSize(10)
+                            .AddChoices(allContexts));
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine("[yellow]⚠[/]  No kubeconfig contexts found — skipping K8s resource cleanup.");
+                    goto SkipCleanup;
+                }
+            }
+
+            await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("cyan"))
+                .StartAsync($"Cleaning up resources in [grey]{context}[/]...", async statusCtx =>
+                {
+                    var progress = new Progress<string>(
+                        msg => statusCtx.Status($"[grey]{Markup.Escape(msg)}[/]"));
+                    try
+                    {
+                        await ClusterRegistrar.TeardownAsync(context, s.SaName, s.SaNamespace, progress);
+                    }
+                    catch (Exception ex)
+                    {
+                        AnsiConsole.MarkupLine($"\n[yellow]⚠[/]  K8s cleanup partial: {Markup.Escape(ex.Message)}");
+                    }
+                });
+
+            AnsiConsole.MarkupLine("  [green]✓[/] Kubernetes resources deleted");
+        }
+
+        SkipCleanup:
+
+        // ── 2. Unregister from the MCP server ──────────────────────────────────
         try
         {
             using var http = new HttpClient();
@@ -639,7 +704,7 @@ sealed class ClusterRemoveCommand : AsyncCommand<ClusterRemoveSettings>
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync();
-                AnsiConsole.MarkupLine($"[red]✗[/] {(int)resp.StatusCode}: {Markup.Escape(body)}");
+                AnsiConsole.MarkupLine($"[red]✗[/] MCP server returned {(int)resp.StatusCode}: {Markup.Escape(body)}");
                 return 1;
             }
         }
@@ -649,11 +714,7 @@ sealed class ClusterRemoveCommand : AsyncCommand<ClusterRemoveSettings>
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[green]✓[/] Cluster [bold]{s.Name}[/] removed.");
-        AnsiConsole.MarkupLine("  Note: the ServiceAccount and RBAC in the target cluster are [grey]not[/] deleted.");
-        AnsiConsole.MarkupLine("  Delete them manually if no longer needed.");
-
-        // Remove from local config
+        // ── 3. Remove from local config ────────────────────────────────────────
         var updatedClusters = (cfg.Clusters ?? [])
             .Where(c => !c.Name.Equals(s.Name, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -661,6 +722,7 @@ sealed class ClusterRemoveCommand : AsyncCommand<ClusterRemoveSettings>
             ? null : cfg.DefaultCluster;
         KuberniqConfigManager.Save(cfg with { Clusters = updatedClusters, DefaultCluster = updatedDefault });
 
+        AnsiConsole.MarkupLine($"\n[green]✓[/] Cluster [bold]{s.Name}[/] fully removed.");
         return 0;
     }
 }

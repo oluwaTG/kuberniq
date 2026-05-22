@@ -19,8 +19,8 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 
 case "$OS" in
-  Darwin) OS_KEY="osx"   ;;
-  Linux)  OS_KEY="linux" ;;
+  Darwin) OS_KEY="macos"  ;;
+  Linux)  OS_KEY="linux"  ;;
   *)
     echo "❌  Unsupported OS: $OS"
     echo "    Download manually from: https://github.com/$REPO/releases"

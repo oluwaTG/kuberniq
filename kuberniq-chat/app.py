@@ -14,7 +14,9 @@ load_dotenv()
 st.set_page_config(page_title="MCP RAG Chatbot", page_icon="🤖", layout="wide")
 openai_api_key = os.getenv("OPENAI_API_KEY", "")
 client = OpenAI(api_key=openai_api_key)
-mcp_url = os.getenv("MCP_SERVER_URL", "http://mcp-server.local")
+mcp_url      = os.getenv("MCP_SERVER_URL", "http://mcp-server.local")
+mcp_username = os.getenv("MCP_USERNAME", "admin")
+mcp_password = os.getenv("MCP_PASSWORD", "")
 
 SYSTEM_PROMPT = """You are an expert Kubernetes assistant.
 You MUST answer using ONLY the live cluster data provided in the [SECTION] blocks below.
@@ -55,11 +57,76 @@ if "chat_history" not in st.session_state:
 if "display_history" not in st.session_state:
     st.session_state.display_history = []  # (role, text, raw_data) for UI
 
+# ── MCP auth ──────────────────────────────────────────────────────────────────
+# Module-level token cache — login once per process, refresh transparently.
+# The chatbot is a service-to-service client so we never prompt for credentials.
+_mcp_access_token:  str | None = None
+_mcp_refresh_token: str | None = None
+
+def _mcp_login() -> bool:
+    """Exchange MCP_USERNAME / MCP_PASSWORD for a JWT. Returns True on success."""
+    global _mcp_access_token, _mcp_refresh_token
+    if not mcp_password:
+        return False   # no credentials configured — server may be running without auth
+    try:
+        r = requests.post(
+            f"{mcp_url}/auth/login",
+            json={"username": mcp_username, "password": mcp_password},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            _mcp_access_token  = data.get("accessToken")
+            _mcp_refresh_token = data.get("refreshToken")
+            return bool(_mcp_access_token)
+        return False
+    except Exception:
+        return False
+
+def _mcp_refresh() -> bool:
+    """Use the cached refresh token to obtain a new access token. Returns True on success."""
+    global _mcp_access_token, _mcp_refresh_token
+    if not _mcp_refresh_token:
+        return False
+    try:
+        r = requests.post(
+            f"{mcp_url}/auth/refresh",
+            json={"refreshToken": _mcp_refresh_token},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            _mcp_access_token  = data.get("accessToken")
+            _mcp_refresh_token = data.get("refreshToken")
+            return bool(_mcp_access_token)
+        return False
+    except Exception:
+        return False
+
+def _auth_headers() -> dict:
+    """Return the Authorization header dict, or empty if no token is available."""
+    return {"Authorization": f"Bearer {_mcp_access_token}"} if _mcp_access_token else {}
+
 # ── MCP helpers ───────────────────────────────────────────────────────────────
 def mcp_get(path: str, text=False):
-    """Fetch from MCP server; returns parsed JSON or raw text."""
+    """Fetch from MCP server with automatic JWT auth and transparent token refresh."""
+    global _mcp_access_token
+
+    # Ensure we have a token before the first real request
+    if _mcp_access_token is None:
+        _mcp_login()
+
+    def _do_get():
+        return requests.get(f"{mcp_url}{path}", headers=_auth_headers(), timeout=15)
+
     try:
-        r = requests.get(f"{mcp_url}{path}", timeout=15)
+        r = _do_get()
+
+        # 401 → try refresh, then re-login, then give up
+        if r.status_code == 401:
+            if _mcp_refresh() or _mcp_login():
+                r = _do_get()
+
         r.raise_for_status()
         return r.text if text else r.json()
     except Exception as e:

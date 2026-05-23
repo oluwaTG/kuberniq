@@ -256,6 +256,12 @@
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
       Resource Quotas
     </a>
+    <!-- Admin-only section — shown/hidden by initDashboard() based on JWT role -->
+    <span class="section-label" id="admin-section-label" style="display:none">Admin</span>
+    <a data-view="users" id="admin-users-link" style="display:none">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+      Users
+    </a>
   </nav>
   <div class="ns-box">
     <label>Cluster</label>
@@ -327,13 +333,23 @@ let logWrap        = true;
 // ── Auth helpers ───────────────────────────────────────────────────────────
 function getToken()         { return localStorage.getItem('kuberniq_access_token'); }
 function getRefreshToken()  { return localStorage.getItem('kuberniq_refresh_token'); }
+function getRole()          { return localStorage.getItem('kuberniq_role') || 'viewer'; }
+function decodeJwtRole(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    // ASP.NET Core encodes ClaimTypes.Role as the full URI
+    return payload['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] || payload.role || 'viewer';
+  } catch { return 'viewer'; }
+}
 function setTokens(access, refresh) {
   localStorage.setItem('kuberniq_access_token',  access);
   localStorage.setItem('kuberniq_refresh_token', refresh);
+  localStorage.setItem('kuberniq_role', decodeJwtRole(access));
 }
 function clearTokens() {
   localStorage.removeItem('kuberniq_access_token');
   localStorage.removeItem('kuberniq_refresh_token');
+  localStorage.removeItem('kuberniq_role');
 }
 
 function showLogin(msg = '') {
@@ -447,6 +463,12 @@ async function initDashboard() {
     populateNsSelect([]);
   }
 
+  // Show admin-only sidebar links
+  if (getRole() === 'admin') {
+    document.getElementById('admin-section-label').style.display = '';
+    document.getElementById('admin-users-link').style.display = '';
+  }
+
   // Load topbar cluster info
   updateTopbar();
 
@@ -555,6 +577,7 @@ async function renderView(view) {
       case 'hpa':             await renderHpa(el);             break;
       case 'resourcequotas':  await renderResourcequotas(el);  break;
       case 'networkpolicies': await renderNetworkpolicies(el); break;
+      case 'users':           await renderUsers(el);           break;
     }
   } catch(e) {
     el.innerHTML = `<div class="empty">&#9888; Error: ${e.message}</div>`;
@@ -626,6 +649,106 @@ function toggleSection(head) {
 }
 
 // ── Views ──────────────────────────────────────────────────────────────────
+async function renderUsers(el) {
+  el.innerHTML = '<div class="loader">Loading</div>';
+
+  let users = [];
+  try {
+    users = await apiFetch('/auth/users');
+    if (!Array.isArray(users)) users = [];
+  } catch(e) {
+    el.innerHTML = `<div class="empty">&#9888; Failed to load users: ${e.message}</div>`;
+    return;
+  }
+
+  const currentUser = (() => {
+    try { return JSON.parse(atob(getToken().split('.')[1])).sub; } catch(_) { return ''; }
+  })();
+
+  const roleBadge = r => {
+    const colors = { admin: '#e74c3c', operator: '#e67e22', viewer: '#27ae60' };
+    return `<span style="background:${colors[r]||'#555'};color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;">${r}</span>`;
+  };
+
+  const rows = users.map(u => `
+    <tr>
+      <td style="padding:8px 12px;">${u.username}</td>
+      <td style="padding:8px 12px;">${roleBadge(u.role)}</td>
+      <td style="padding:8px 12px;">
+        ${u.username !== currentUser
+          ? `<button onclick="deleteUser('${u.username}')" style="background:#e74c3c;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">Delete</button>`
+          : '<span style="color:#888;font-size:12px;">current user</span>'}
+      </td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="padding:20px;">
+      <h2 style="margin-top:0;">User Management</h2>
+
+      <table style="width:100%;border-collapse:collapse;background:#1e2a38;border-radius:8px;overflow:hidden;margin-bottom:28px;">
+        <thead>
+          <tr style="background:#16202c;color:#aaa;font-size:12px;text-transform:uppercase;">
+            <th style="padding:10px 12px;text-align:left;">Username</th>
+            <th style="padding:10px 12px;text-align:left;">Role</th>
+            <th style="padding:10px 12px;text-align:left;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="users-tbody">
+          ${rows || '<tr><td colspan="3" style="padding:12px;color:#888;">No users found.</td></tr>'}
+        </tbody>
+      </table>
+
+      <div style="background:#1e2a38;border-radius:8px;padding:20px;max-width:420px;">
+        <h3 style="margin-top:0;font-size:15px;">Create User</h3>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <input id="new-username" placeholder="Username" style="padding:8px;border-radius:4px;border:1px solid #334;background:#16202c;color:#eee;" />
+          <input id="new-password" type="password" placeholder="Password" style="padding:8px;border-radius:4px;border:1px solid #334;background:#16202c;color:#eee;" />
+          <select id="new-role" style="padding:8px;border-radius:4px;border:1px solid #334;background:#16202c;color:#eee;">
+            <option value="viewer">viewer</option>
+            <option value="operator">operator</option>
+            <option value="admin">admin</option>
+          </select>
+          <button onclick="createUser()" style="padding:8px;background:#2980b9;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Create User</button>
+          <div id="user-form-msg" style="font-size:12px;color:#e74c3c;min-height:16px;"></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function createUser() {
+  const username = document.getElementById('new-username').value.trim();
+  const password = document.getElementById('new-password').value;
+  const role = document.getElementById('new-role').value;
+  const msg = document.getElementById('user-form-msg');
+  msg.textContent = '';
+  if (!username || !password) { msg.textContent = 'Username and password are required.'; return; }
+  try {
+    const r = await fetch(API + '/auth/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ username, password, role })
+    });
+    if (!r.ok) { const t = await r.text(); msg.textContent = t || 'Failed to create user.'; return; }
+    msg.style.color = '#27ae60';
+    msg.textContent = `User "${username}" created.`;
+    document.getElementById('new-username').value = '';
+    document.getElementById('new-password').value = '';
+    await renderUsers(document.getElementById('content'));
+  } catch(e) { msg.textContent = e.message; }
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  try {
+    const r = await fetch(API + '/auth/users/' + encodeURIComponent(username), {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + getToken() }
+    });
+    if (!r.ok) { const t = await r.text(); alert('Failed to delete user: ' + t); return; }
+    await renderUsers(document.getElementById('content'));
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
 async function renderOverview(el) {
   const [cluster, pods, deps] = await Promise.all([
     apiFetch('/cluster/info'),

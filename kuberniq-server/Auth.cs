@@ -150,8 +150,8 @@ public class AuthService
             return (false, "Username must be at least 3 characters.");
         if (string.IsNullOrWhiteSpace(password) || password.Length < 8)
             return (false, "Password must be at least 8 characters.");
-        if (role is not ("admin" or "viewer"))
-            return (false, "Role must be 'admin' or 'viewer'.");
+        if (role is not ("admin" or "operator" or "viewer"))
+            return (false, "Role must be 'admin', 'operator', or 'viewer'.");
 
         var secretName = UserSecretName(username);
 

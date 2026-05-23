@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="KubernetesClient" Version="19.0.2" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
+    <PackageReference Include="BCrypt.Net-Next"                               Version="4.0.3" />
     <!-- Explicit overrides to ensure transitive identity-model packages are patched -->
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.18.0" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt"       Version="8.18.0" />

@@ -115,9 +115,58 @@
   ::-webkit-scrollbar{width:6px;height:6px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+  /* ── Login overlay ── */
+  #login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:1000}
+  #login-screen.hidden{display:none}
+  .login-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:2.5rem 2rem;width:100%;max-width:380px;display:flex;flex-direction:column;align-items:center;gap:1.25rem}
+  .login-logo{display:flex;align-items:center;gap:.75rem}
+  .login-logo span{font-size:1.4rem;font-weight:700;letter-spacing:.03em;color:var(--text)}
+  .login-subtitle{font-size:.875rem;color:var(--muted);margin-top:-.5rem}
+  .login-fields{width:100%;display:flex;flex-direction:column;gap:.9rem}
+  .login-field-group{display:flex;flex-direction:column;gap:.3rem}
+  .login-fields label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .login-fields input{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:.65rem .9rem;font-size:.9rem;outline:none;transition:border-color .15s}
+  .login-fields input:focus{border-color:var(--accent)}
+  .login-btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:.75rem;font-size:.9rem;font-weight:600;cursor:pointer;transition:opacity .15s;letter-spacing:.02em}
+  .login-btn:hover{opacity:.88}
+  .login-btn:disabled{opacity:.5;cursor:not-allowed}
+  .login-error{color:var(--danger);font-size:.8rem;text-align:center;min-height:1.1em;width:100%}
+  .login-hint{font-size:.72rem;color:var(--muted);text-align:center;line-height:1.5}
+  .login-hint code{font-family:'Cascadia Code','Fira Code',monospace;background:var(--surface2);border:1px solid var(--border);padding:.1rem .35rem;border-radius:4px;font-size:.7rem;color:var(--accent2)}
 </style>
 </head>
 <body>
+
+<!-- ═══ Login Screen ═══ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+        <path d="M12 2L2 7l10 5 10-5-10-5z" stroke="#4f8ef7" stroke-width="1.8" stroke-linejoin="round"/>
+        <path d="M2 17l10 5 10-5" stroke="#38d9a9" stroke-width="1.8" stroke-linejoin="round"/>
+        <path d="M2 12l10 5 10-5" stroke="#4f8ef7" stroke-width="1.8" stroke-linejoin="round"/>
+      </svg>
+      <span>KUBERNIQ</span>
+    </div>
+    <p class="login-subtitle">Sign in to your cluster dashboard</p>
+    <div class="login-fields">
+      <div class="login-field-group">
+        <label for="login-user">Username</label>
+        <input id="login-user" type="text" placeholder="admin" autocomplete="username"/>
+      </div>
+      <div class="login-field-group">
+        <label for="login-pass">Password</label>
+        <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password"/>
+      </div>
+    </div>
+    <p class="login-error" id="login-error"></p>
+    <button class="login-btn" id="login-btn" onclick="doLogin()">Sign in</button>
+    <p class="login-hint">First time? Retrieve the admin password with:<br/>
+      <code id="login-hint-cmd">kubectl get secret kuberniq-admin-initial-password -n &lt;namespace&gt; -o jsonpath='{.data.password}' | base64 -d</code>
+    </p>
+  </div>
+</div>
 
 <!-- ═══ Sidebar ═══ -->
 <aside id="sidebar">
@@ -234,6 +283,7 @@
         <div class="pill">Pods <span id="tb-pods">—</span></div>
       </div>
       <button id="refresh-btn" onclick="refreshView()">&#8635; Refresh</button>
+      <button id="logout-btn" onclick="doLogout()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:.3rem .7rem;font-size:.8rem;cursor:pointer;transition:all .15s" onmouseenter="this.style.borderColor='var(--danger)';this.style.color='var(--danger)'" onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">&#x2192; Sign out</button>
     </div>
   </div>
   <div id="content"><div class="loader">Loading</div></div>
@@ -274,18 +324,117 @@ let logTarget      = null;
 let rawLogLines    = [];
 let logWrap        = true;
 
+// ── Auth helpers ───────────────────────────────────────────────────────────
+function getToken()         { return localStorage.getItem('kuberniq_access_token'); }
+function getRefreshToken()  { return localStorage.getItem('kuberniq_refresh_token'); }
+function setTokens(access, refresh) {
+  localStorage.setItem('kuberniq_access_token',  access);
+  localStorage.setItem('kuberniq_refresh_token', refresh);
+}
+function clearTokens() {
+  localStorage.removeItem('kuberniq_access_token');
+  localStorage.removeItem('kuberniq_refresh_token');
+}
+
+function showLogin(msg = '') {
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('login-error').textContent = msg;
+  document.getElementById('login-pass').value = '';
+}
+function hideLogin() {
+  document.getElementById('login-screen').classList.add('hidden');
+}
+
+async function doLogin() {
+  const btn  = document.getElementById('login-btn');
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  const errEl = document.getElementById('login-error');
+  if (!user || !pass) { errEl.textContent = 'Username and password are required.'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  errEl.textContent = '';
+  try {
+    const r = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass })
+    });
+    if (!r.ok) { errEl.textContent = 'Invalid username or password.'; return; }
+    const { accessToken, refreshToken } = await r.json();
+    setTokens(accessToken, refreshToken);
+    hideLogin();
+    await initDashboard();
+  } catch(e) {
+    errEl.textContent = 'Could not connect to server.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+  }
+}
+
+async function doLogout() {
+  try {
+    await fetch('/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getToken() },
+      body: JSON.stringify({ refreshToken: getRefreshToken() })
+    });
+  } catch(_) {}
+  clearTokens();
+  showLogin();
+}
+
+async function tryRefreshToken() {
+  const rt = getRefreshToken();
+  if (!rt) return false;
+  try {
+    const r = await fetch('/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken: rt })
+    });
+    if (!r.ok) return false;
+    const { accessToken, refreshToken } = await r.json();
+    setTokens(accessToken, refreshToken);
+    return true;
+  } catch(_) { return false; }
+}
+
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 (async function init() {
-  // Wire up sidebar links
+  // Wire sidebar links
   document.querySelectorAll('#sidebar-nav a[data-view]').forEach(a => {
     a.addEventListener('click', () => navigate(a));
   });
+  // Allow Enter key to submit login
+  document.getElementById('login-pass').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
 
+  // Populate the hint with the correct namespace from the server
+  try {
+    const health = await fetch('/health').then(r => r.json());
+    const ns = health.ns || '<namespace>';
+    document.getElementById('login-hint-cmd').textContent =
+      `kubectl get secret kuberniq-admin-initial-password -n ${ns} -o jsonpath='{.data.password}' | base64 -d`;
+  } catch(_) {}
+
+  if (!getToken()) {
+    showLogin();
+    return;
+  }
+  hideLogin();
+  await initDashboard();
+})();
+
+async function initDashboard() {
   // Load registered clusters
   try {
     const clusters = await apiFetch('/clusters');
     populateClusterSelect(Array.isArray(clusters) ? clusters : []);
-  } catch(_) {
+  } catch(e) {
+    if (e.message === 'Unauthorized') return;
     populateClusterSelect([]);
   }
 
@@ -294,6 +443,7 @@ let logWrap        = true;
     const nsList = await apiFetch('/namespaces');
     populateNsSelect(Array.isArray(nsList) ? nsList : []);
   } catch(e) {
+    if (e.message === 'Unauthorized') return;
     populateNsSelect([]);
   }
 
@@ -302,7 +452,7 @@ let logWrap        = true;
 
   // Render default view
   renderView('overview');
-})();
+}
 
 async function updateTopbar() {
   document.getElementById('tb-cluster').textContent = currentCluster;
@@ -418,12 +568,30 @@ function clusterParam(path) {
   return path + sep + 'cluster=' + encodeURIComponent(currentCluster);
 }
 async function apiFetch(path) {
-  const r = await fetch(API + clusterParam(path));
+  const r = await fetch(API + clusterParam(path), {
+    headers: { 'Authorization': 'Bearer ' + getToken() }
+  });
+  if (r.status === 401) {
+    const refreshed = await tryRefreshToken();
+    if (refreshed) return apiFetch(path);
+    clearTokens();
+    showLogin('Your session has expired. Please sign in again.');
+    throw new Error('Unauthorized');
+  }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText} (${path})`);
   return r.json();
 }
 async function apiText(path) {
-  const r = await fetch(API + clusterParam(path));
+  const r = await fetch(API + clusterParam(path), {
+    headers: { 'Authorization': 'Bearer ' + getToken() }
+  });
+  if (r.status === 401) {
+    const refreshed = await tryRefreshToken();
+    if (refreshed) return apiText(path);
+    clearTokens();
+    showLogin('Your session has expired. Please sign in again.');
+    throw new Error('Unauthorized');
+  }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText} (${path})`);
   return r.text();
 }

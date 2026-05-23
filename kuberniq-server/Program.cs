@@ -3,13 +3,16 @@ using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Claims;
 using k8s;
 using k8s.Models;
+using KuberniqServer;
 using Microsoft.Extensions.Caching.Memory;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddMemoryCache();
 builder.Services.AddEndpointsApiExplorer();
+builder.Logging.AddConsole();
 
 var app = builder.Build();
 
@@ -99,6 +102,27 @@ catch (Exception ex)
 
 var cache = app.Services.GetRequiredService<IMemoryCache>();
 
+// ── Auth service ──────────────────────────────────────────────────────────────
+var authService = new AuthService(
+    clusterRegistry["local"],
+    mcpNamespace,
+    app.Logger);
+
+// Ensure the JWT signing key exists on startup
+await authService.GetOrCreateSigningKeyAsync();
+
+// First-run bootstrap: auto-create 'admin' user with a random password stored
+// in the 'kuberniq-admin-initial-password' Secret (ArgoCD-style).
+// Retrieve it with:
+//   kubectl get secret kuberniq-admin-initial-password -n <ns> \
+//     -o jsonpath='{.data.password}' | base64 -d
+var bootstrapPassword = await authService.BootstrapAdminAsync();
+if (bootstrapPassword is not null)
+{
+    Console.WriteLine("[Auth] First-run bootstrap complete. Retrieve the admin password with:");
+    Console.WriteLine($"[Auth]   kubectl get secret kuberniq-admin-initial-password -n {mcpNamespace} -o jsonpath='{{.data.password}}' | base64 -d");
+}
+
 // Per-request routing: set by the middleware below from the ?cluster= query param.
 var currentCluster = new AsyncLocal<string?>();
 
@@ -109,11 +133,39 @@ Kubernetes GetClient() =>
             $"Cluster '{currentCluster.Value}' is not registered. " +
             "Use GET /clusters to list available clusters or POST /clusters to register one.");
 
-// Middleware: reads ?cluster= from every request, sets currentCluster for the duration.
-// Zero changes required to any existing endpoint handler.
+// Middleware: cluster routing + JWT auth enforcement
+// Public paths: /health, /auth/*
 app.Use(async (ctx, next) =>
 {
     currentCluster.Value = ctx.Request.Query["cluster"].FirstOrDefault();
+
+    var path = ctx.Request.Path.Value ?? "";
+    bool isPublic = path.StartsWith("/auth/") || path == "/health" || path == "/";
+
+    if (!isPublic)
+    {
+        var authHeader = ctx.Request.Headers.Authorization.FirstOrDefault();
+        if (authHeader is null || !authHeader.StartsWith("Bearer "))
+        {
+            ctx.Response.StatusCode = 401;
+            await ctx.Response.WriteAsJsonAsync(new { error = "Authentication required. Please log in via POST /auth/login." });
+            return;
+        }
+
+        var token     = authHeader["Bearer ".Length..].Trim();
+        var principal = await authService.ValidateAccessTokenAsync(token);
+        if (principal is null)
+        {
+            ctx.Response.StatusCode = 401;
+            await ctx.Response.WriteAsJsonAsync(new { error = "Invalid or expired token. Please log in again." });
+            return;
+        }
+
+        ctx.Items["user"]      = principal.Identity?.Name;
+        ctx.Items["role"]      = principal.FindFirst(ClaimTypes.Role)?.Value;
+        ctx.Items["principal"] = principal;
+    }
+
     await next();
     currentCluster.Value = null;
 });
@@ -153,7 +205,86 @@ async Task<T> WithK8sRetryAsync<T>(Func<Kubernetes, Task<T>> action)
 
 // ── Cluster management endpoints ─────────────────────────────────────────────
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "kuberniq-server" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "kuberniq-server", ns = mcpNamespace }));
+
+// ── Auth endpoints ────────────────────────────────────────────────────────────
+
+// POST /auth/login — returns access + refresh tokens
+app.MapPost("/auth/login", async (LoginRequest req) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Username) || string.IsNullOrWhiteSpace(req.Password))
+        return Results.BadRequest(new { error = "Username and password are required." });
+
+    var (valid, username, role, err) = await authService.ValidateCredentialsAsync(req.Username, req.Password);
+    if (!valid) return Results.Unauthorized();
+
+    var tokens = await authService.IssueTokensAsync(username, role);
+    return Results.Ok(tokens);
+});
+
+// POST /auth/refresh — exchange a refresh token for a new access token
+app.MapPost("/auth/refresh", async (RefreshRequest req) =>
+{
+    if (string.IsNullOrWhiteSpace(req.RefreshToken))
+        return Results.BadRequest(new { error = "refreshToken is required." });
+
+    var (ok, tokens, err) = await authService.RefreshAsync(req.RefreshToken);
+    if (!ok) return Results.Unauthorized();
+    return Results.Ok(tokens);
+});
+
+// POST /auth/logout — revoke the refresh token
+app.MapPost("/auth/logout", async (RefreshRequest req) =>
+{
+    await authService.RevokeRefreshTokenAsync(req.RefreshToken ?? "");
+    return Results.Ok(new { message = "Logged out." });
+});
+
+// ── User management (admin only) ──────────────────────────────────────────────
+
+// GET /auth/users — list all users
+app.MapGet("/auth/users", async (HttpContext ctx) =>
+{
+    if (ctx.Items["role"]?.ToString() != "admin")
+        return Results.Forbid();
+    var users = await authService.ListUsersAsync();
+    return Results.Ok(users);
+});
+
+// POST /auth/users — create a user (admin only)
+app.MapPost("/auth/users", async (CreateUserRequest req, HttpContext ctx) =>
+{
+    if (ctx.Items["role"]?.ToString() != "admin")
+        return Results.Forbid();
+
+    var (ok, err) = await authService.CreateUserAsync(req.Username, req.Password, req.Role ?? "viewer");
+    if (!ok) return Results.BadRequest(new { error = err });
+    return Results.Created($"/auth/users/{req.Username}", new { username = req.Username, role = req.Role ?? "viewer" });
+});
+
+// DELETE /auth/users/{username} — delete a user (admin only)
+app.MapDelete("/auth/users/{username}", async (string username, HttpContext ctx) =>
+{
+    if (ctx.Items["role"]?.ToString() != "admin")
+        return Results.Forbid();
+    if (ctx.Items["user"]?.ToString() == username)
+        return Results.BadRequest(new { error = "You cannot delete your own account." });
+
+    var (ok, err) = await authService.DeleteUserAsync(username);
+    if (!ok) return Results.NotFound(new { error = err });
+    return Results.Ok(new { message = $"User '{username}' deleted." });
+});
+
+// POST /auth/change-password — change own password
+app.MapPost("/auth/change-password", async (ChangePasswordRequest req, HttpContext ctx) =>
+{
+    var username = ctx.Items["user"]?.ToString();
+    if (username is null) return Results.Unauthorized();
+
+    var (ok, err) = await authService.ChangePasswordAsync(username, req.CurrentPassword, req.NewPassword);
+    if (!ok) return Results.BadRequest(new { error = err });
+    return Results.Ok(new { message = "Password changed successfully." });
+});
 
 // List all registered clusters
 app.MapGet("/clusters", () =>

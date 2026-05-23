@@ -1,20 +1,73 @@
-# MCP Server
+# kuberniq-server
 
-A lightweight .NET 10 minimal API that exposes read-only Kubernetes cluster context over HTTP.  
-Designed to run in-cluster and serve as the data layer for the MCP RAG Chatbot.
+A lightweight .NET 10 minimal API that exposes Kubernetes cluster context over HTTP, secured with JWT authentication.  
+Designed to run in-cluster and serve as the data layer for the Kuberniq dashboard and MCP RAG Chatbot.
 
 ---
 
 ## Features
 
+- **JWT authentication** — all routes are protected; login via `POST /auth/login`, tokens stored in-browser
+- **ArgoCD-style bootstrap** — first-run auto-creates an `admin` user with a random password stored in a K8s Secret; no setup wizard needed
+- **Full SPA dashboard** at `/` — login page, sidebar navigation, namespace switcher, resource tables, log viewer
 - **Live cluster data** — 40+ endpoints covering every major Kubernetes resource type
-- **Full SPA dashboard** at `/` — sidebar navigation, namespace switcher, resource tables, log viewer
+- **Multi-cluster support** — register remote clusters via `POST /clusters`; all endpoints accept `?cluster=<name>`
 - **Multi-container log support** — view logs per container or all containers merged in one call
 - **Auto-reconnect** — recreates the Kubernetes client automatically on SSL/connection drops
 - **Troubleshoot endpoint** — aggregates pods, events and logs for a service in one call
 - **In-cluster & local** — uses in-cluster config when deployed, falls back to `~/.kube/config` locally
 - **Helm packaged** — distributed as a Helm chart with fully overridable `values.yaml`
 - **ArgoCD managed** — GitOps deployment via ArgoCD Application manifests
+
+---
+
+## Authentication
+
+All API endpoints (except `GET /` and `GET /health`) require a valid JWT `Bearer` token.
+
+### First-run bootstrap
+
+On first start, the server auto-creates an `admin` user and stores the random password in a K8s Secret:
+
+```bash
+# Get the namespace the server is running in (shown in server startup logs)
+kubectl get secret kuberniq-admin-initial-password \
+  -n <server-namespace> \
+  -o jsonpath='{.data.password}' | base64 -d
+```
+
+> The login page hint automatically shows the exact command with the correct namespace.
+
+Delete the secret after changing your password:
+```bash
+kubectl delete secret kuberniq-admin-initial-password -n <server-namespace>
+```
+
+### Token flow
+
+| Step | Request |
+|------|---------|
+| Login | `POST /auth/login` → returns `accessToken` (1 hr) + `refreshToken` (30 days) |
+| Refresh | `POST /auth/refresh` → rotates both tokens |
+| Logout | `POST /auth/logout` → revokes the refresh token |
+
+All tokens are stored in browser `localStorage`. Access tokens are sent as `Authorization: Bearer <token>` on every API call. Expired access tokens are silently refreshed.
+
+### User management (admin only)
+
+```bash
+# List users
+GET  /auth/users
+
+# Create a user  (role: "admin" or "viewer")
+POST /auth/users        {"username":"alice","password":"...","role":"viewer"}
+
+# Delete a user
+DELETE /auth/users/{username}
+
+# Change your own password (any authenticated user)
+POST /auth/change-password   {"currentPassword":"...","newPassword":"..."}
+```
 
 ---
 
@@ -87,7 +140,7 @@ helm uninstall kuberniq-server --namespace kuberniq-server
 | Value | Default | Description |
 |-------|---------|-------------|
 | `image.repository` | `elumole22/kuberniq-server` | Container image registry and name |
-| `image.tag` | `1.0.5` | Image tag — update on every release |
+| `image.tag` | `1.1.0` | Image tag — update on every release |
 | `ingress.enabled` | `true` | Enable/disable the ingress |
 | `ingress.hosts[0].host` | `kuberniq-server.local` | Hostname for the dashboard |
 | `ingress.className` | `nginx` | Ingress class (change if using Traefik, etc.) |
@@ -128,6 +181,25 @@ Click **Logs** on any pod row to open the slide-up log panel:
 ---
 
 ## Endpoints
+
+### Authentication (public)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | SPA dashboard (login page if unauthenticated) |
+| GET | `/health` | Health probe — returns `{"status":"ok","ns":"<namespace>"}` |
+| POST | `/auth/login` | Login — body `{"username":"...","password":"..."}`, returns `accessToken` + `refreshToken` |
+| POST | `/auth/refresh` | Rotate tokens — body `{"refreshToken":"..."}` |
+| POST | `/auth/logout` | Revoke refresh token — body `{"refreshToken":"..."}` |
+
+### Authentication (protected)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/auth/users` | List users (admin only) |
+| POST | `/auth/users` | Create user (admin only) — body `{"username","password","role"}` |
+| DELETE | `/auth/users/{username}` | Delete user (admin only) |
+| POST | `/auth/change-password` | Change own password — body `{"currentPassword","newPassword"}` |
 
 ### Core
 
@@ -248,17 +320,20 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 ## Security Notes
 
+- **JWT authentication** is enabled by default — all API routes require a `Bearer` token.
+- Access tokens expire after **1 hour**; refresh tokens after **30 days**. Tokens are rotated on refresh.
+- Passwords are hashed with **bcrypt** (work factor 12) and stored as K8s Secrets.
+- The JWT signing key is auto-generated on first run and stored as a K8s Secret.
 - The ClusterRole is **read-only**. No write, delete, or exec permissions are granted.
 - Secret values are never returned — only key names are exposed.
-- Add authentication (mTLS, JWT, or an ingress-level token) before exposing the service externally.
-- Sanitize logs before forwarding to any external LLM API to avoid leaking sensitive data.
+- Delete the `kuberniq-admin-initial-password` Secret after changing the admin password.
 
 ---
 
 ## Roadmap
 
-- [ ] Authentication (token / mTLS)
-- [ ] Multi-cluster support
+- [x] Authentication (JWT with bcrypt + K8s Secret storage)
+- [ ] Multi-cluster support (UI cluster switcher)
 - [ ] Rate limiting and response caching
 - [ ] Cluster-wide health summary endpoint (`/summary`)
 - [ ] WebSocket log streaming (real-time instead of tail)

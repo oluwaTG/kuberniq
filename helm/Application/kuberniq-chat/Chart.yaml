@@ -2,5 +2,5 @@ apiVersion: v2
 name: kuberniq-chat
 description: Kuberniq Chat — AI-powered Kubernetes assistant backed by Kuberniq Server
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 1.0.1
+appVersion: "1.0.1"

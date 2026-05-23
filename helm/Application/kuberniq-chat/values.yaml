@@ -106,7 +106,32 @@ readinessProbe:
 # ------------------------------------------------------------------------------
 # Application config
 # ------------------------------------------------------------------------------
-mcpServerUrl: "http://mcp-server.mcp-server.svc.cluster.local:8080"
+mcpServerUrl: "http://kuberniq-server.kuberniq-server.svc.cluster.local:8080"
+
+# ------------------------------------------------------------------------------
+# MCP Server authentication
+# ------------------------------------------------------------------------------
+# The chatbot authenticates to kuberniq-server using a dedicated service account.
+# Create the user on the server first (admin only):
+#
+#   POST /auth/users
+#   { "username": "kuberniq-chat", "password": "<strong-password>", "role": "viewer" }
+#
+# Then store the credentials in a Kubernetes Secret and reference it below.
+# The chatbot will login once at startup and silently refresh the JWT as needed.
+#
+# Create the secret:
+#   kubectl create secret generic kuberniq-chat-mcp-auth \
+#     --from-literal=username=kuberniq-chat \
+#     --from-literal=password=<strong-password> \
+#     -n kuberniq-chat
+#
+# If mcpAuth.secretName is empty, the chatbot will attempt unauthenticated access
+# (only works if the server has no auth configured — i.e. local dev without auth).
+mcpAuth:
+  secretName: "kuberniq-chat-mcp-auth"   # K8s Secret containing username + password
+  usernameKey: "username"                 # key inside the Secret for the username
+  passwordKey: "password"                 # key inside the Secret for the password
 
 # Pass OPENAI_API_KEY however suits your setup — plain value, secretKeyRef,
 # Azure Key Vault CSI, or any other valueFrom source.

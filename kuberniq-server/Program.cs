@@ -111,6 +111,10 @@ var authService = new AuthService(
 // Ensure the JWT signing key exists on startup
 await authService.GetOrCreateSigningKeyAsync();
 
+// ── OIDC config (optional — disabled if secret absent) ───────────────────────
+var oidcConfig    = await OidcConfig.LoadAsync(clusterRegistry["local"], mcpNamespace, app.Logger);
+var oidcValidator = new OidcValidator(oidcConfig, app.Logger);
+
 // First-run bootstrap: auto-create 'admin' user with a random password stored
 // in the 'kuberniq-admin-initial-password' Secret (ArgoCD-style).
 // Retrieve it with:
@@ -156,6 +160,22 @@ app.Use(async (ctx, next) =>
 
         var token     = authHeader["Bearer ".Length..].Trim();
         var principal = await authService.ValidateAccessTokenAsync(token);
+
+        if (principal is null && oidcConfig.Enabled)
+        {
+            // Local validation failed — try external OIDC provider
+            var oidcResult = await oidcValidator.ValidateAsync(token);
+            if (oidcResult is not null)
+            {
+                ctx.Items["user"] = oidcResult.Username;
+                ctx.Items["role"] = oidcResult.Role;
+                ctx.Items["auth"] = "oidc";
+                await next();
+                currentCluster.Value = null;
+                return;
+            }
+        }
+
         if (principal is null)
         {
             ctx.Response.StatusCode = 401;
@@ -166,6 +186,7 @@ app.Use(async (ctx, next) =>
         ctx.Items["user"]      = principal.Identity?.Name;
         ctx.Items["role"]      = principal.FindFirst(ClaimTypes.Role)?.Value;
         ctx.Items["principal"] = principal;
+        ctx.Items["auth"]      = "local";
     }
 
     await next();
@@ -207,7 +228,12 @@ async Task<T> WithK8sRetryAsync<T>(Func<Kubernetes, Task<T>> action)
 
 // ── Cluster management endpoints ─────────────────────────────────────────────
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "kuberniq-server", ns = mcpNamespace }));
+app.MapGet("/health", () => Results.Ok(new {
+    status  = "ok",
+    service = "kuberniq-server",
+    ns      = mcpNamespace,
+    oidc    = oidcConfig.Enabled ? new { enabled = true, authority = oidcConfig.Authority } : (object)new { enabled = false }
+}));
 
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 

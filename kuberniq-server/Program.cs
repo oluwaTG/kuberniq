@@ -140,7 +140,9 @@ app.Use(async (ctx, next) =>
     currentCluster.Value = ctx.Request.Query["cluster"].FirstOrDefault();
 
     var path = ctx.Request.Path.Value ?? "";
-    bool isPublic = path.StartsWith("/auth/") || path == "/health" || path == "/";
+    // Only unauthenticated auth endpoints are public; user-management endpoints require a token
+    bool isPublic = path == "/health" || path == "/" ||
+                    path == "/auth/login" || path == "/auth/refresh" || path == "/auth/logout";
 
     if (!isPublic)
     {

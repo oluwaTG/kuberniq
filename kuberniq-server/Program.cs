@@ -246,7 +246,7 @@ app.MapPost("/auth/logout", async (RefreshRequest req) =>
 app.MapGet("/auth/users", async (HttpContext ctx) =>
 {
     if (ctx.Items["role"]?.ToString() != "admin")
-        return Results.Forbid();
+        return Results.Json(new { error = "Forbidden." }, statusCode: 403);
     var users = await authService.ListUsersAsync();
     return Results.Ok(users);
 });
@@ -255,7 +255,7 @@ app.MapGet("/auth/users", async (HttpContext ctx) =>
 app.MapPost("/auth/users", async (CreateUserRequest req, HttpContext ctx) =>
 {
     if (ctx.Items["role"]?.ToString() != "admin")
-        return Results.Forbid();
+        return Results.Json(new { error = "Forbidden." }, statusCode: 403);
 
     var (ok, err) = await authService.CreateUserAsync(req.Username, req.Password, req.Role ?? "viewer");
     if (!ok) return Results.BadRequest(new { error = err });
@@ -266,7 +266,7 @@ app.MapPost("/auth/users", async (CreateUserRequest req, HttpContext ctx) =>
 app.MapDelete("/auth/users/{username}", async (string username, HttpContext ctx) =>
 {
     if (ctx.Items["role"]?.ToString() != "admin")
-        return Results.Forbid();
+        return Results.Json(new { error = "Forbidden." }, statusCode: 403);
     if (ctx.Items["user"]?.ToString() == username)
         return Results.BadRequest(new { error = "You cannot delete your own account." });
 

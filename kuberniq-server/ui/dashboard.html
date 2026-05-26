@@ -345,6 +345,13 @@
       <option>Loading…</option>
     </select>
   </div>
+  <div id="user-info-bar" style="padding:.6rem 1rem;border-top:1px solid var(--border);display:flex;align-items:center;gap:.6rem">
+    <div id="user-avatar" style="width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700;flex-shrink:0">?</div>
+    <div style="min-width:0;flex:1">
+      <div id="user-name" style="font-size:.75rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+      <div id="user-role-pill" style="font-size:.65rem;margin-top:.15rem;padding:.1rem .45rem;border-radius:99px;display:inline-block;background:var(--surface2);color:var(--muted)">viewer</div>
+    </div>
+  </div>
 </aside>
 
 <!-- ═══ Main ═══ -->
@@ -411,15 +418,43 @@ function decodeJwtRole(token) {
     return payload['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] || payload.role || 'viewer';
   } catch { return 'viewer'; }
 }
+function decodeJwtSub(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    return payload.sub || payload.name || '';
+  } catch { return ''; }
+}
+function updateUserInfoBar(access) {
+  const username = decodeJwtSub(access);
+  const role     = decodeJwtRole(access);
+  const nameEl   = document.getElementById('user-name');
+  const avatarEl = document.getElementById('user-avatar');
+  const pillEl   = document.getElementById('user-role-pill');
+  if (!nameEl) return;
+  nameEl.textContent   = username || '—';
+  avatarEl.textContent = username ? username.charAt(0).toUpperCase() : '?';
+  pillEl.textContent   = role;
+  const roleColours = { admin: 'var(--accent)', operator: 'var(--ok)', viewer: 'var(--muted)' };
+  const roleBg      = { admin: 'rgba(99,102,241,.15)', operator: 'rgba(34,197,94,.12)', viewer: 'var(--surface2)' };
+  pillEl.style.color      = roleColours[role] || roleColours.viewer;
+  pillEl.style.background = roleBg[role]      || roleBg.viewer;
+}
 function setTokens(access, refresh) {
   localStorage.setItem('kuberniq_access_token',  access);
   localStorage.setItem('kuberniq_refresh_token', refresh);
   localStorage.setItem('kuberniq_role', decodeJwtRole(access));
+  updateUserInfoBar(access);
 }
 function clearTokens() {
   localStorage.removeItem('kuberniq_access_token');
   localStorage.removeItem('kuberniq_refresh_token');
   localStorage.removeItem('kuberniq_role');
+  const nameEl = document.getElementById('user-name');
+  const avatarEl = document.getElementById('user-avatar');
+  const pillEl = document.getElementById('user-role-pill');
+  if (nameEl) nameEl.textContent = '—';
+  if (avatarEl) avatarEl.textContent = '?';
+  if (pillEl) { pillEl.textContent = 'viewer'; pillEl.style.color = 'var(--muted)'; pillEl.style.background = 'var(--surface2)'; }
 }
 
 function showLogin(msg = '') {
@@ -544,6 +579,9 @@ async function tryRefreshToken() {
 })();
 
 async function initDashboard() {
+  // Populate user info bar from stored token
+  const tok = getToken();
+  if (tok) updateUserInfoBar(tok);
   // Load registered clusters
   try {
     const clusters = await apiFetch('/clusters');

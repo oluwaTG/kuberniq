@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "kuberniq-server": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "MCP_NAMESPACE": "kuberniq-server-dev"
+      },
+      "applicationUrl": "http://localhost:5165"
+    }
+  }
+}

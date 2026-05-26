@@ -1,5 +1,7 @@
 using k8s;
 using k8s.Models;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace KuberniqServer;
 
@@ -18,53 +20,34 @@ namespace KuberniqServer;
 //     --from-literal=adminValues=kuberniq-admins \
 //     --from-literal=operatorValues=kuberniq-operators
 //
-// Supported authorities (Authority field):
-//   Entra ID / Azure AD : https://login.microsoftonline.com/{tenantId}/v2.0
-//   AWS Cognito         : https://cognito-idp.{region}.amazonaws.com/{userPoolId}
-//   Google              : https://accounts.google.com
-//   Okta                : https://{domain}/oauth2/default
-//   Any OIDC provider   : the issuer URL (must expose /.well-known/openid-configuration)
+// Redirect URI to register in Azure App Registration (Phase 2):
+//   https://<your-host>/auth/oidc/callback
 // ─────────────────────────────────────────────────────────────────────────────
 
 public class OidcConfig
 {
     const string SecretName = "kuberniq-oidc-config";
 
-    /// <summary>Whether external OIDC authentication is enabled.</summary>
     public bool   Enabled         { get; private set; }
-
-    /// <summary>OIDC issuer / authority URL (e.g. https://login.microsoftonline.com/{tenant}/v2.0)</summary>
     public string Authority       { get; private set; } = "";
-
-    /// <summary>OAuth2 client ID registered with the provider.</summary>
     public string ClientId        { get; private set; } = "";
-
-    /// <summary>OAuth2 client secret (used for Authorization Code flow callbacks).</summary>
     public string ClientSecret    { get; private set; } = "";
-
-    /// <summary>
-    /// JWT claim type that carries role/group information.
-    /// Common values: "roles" (Entra ID), "cognito:groups" (Cognito), "groups" (Okta/generic).
-    /// Defaults to "roles".
-    /// </summary>
     public string RoleClaimType   { get; private set; } = "roles";
-
-    /// <summary>
-    /// Comma-separated claim values that should map to the 'admin' kuberniq role.
-    /// e.g. "kuberniq-admins,GlobalAdmins"
-    /// </summary>
     public string[] AdminValues    { get; private set; } = [];
-
-    /// <summary>
-    /// Comma-separated claim values that should map to the 'operator' kuberniq role.
-    /// </summary>
     public string[] OperatorValues { get; private set; } = [];
+    public string DefaultRole     { get; private set; } = "viewer";
 
     /// <summary>
-    /// Role to assign when no matching group claim is found.
-    /// Defaults to 'viewer'.
+    /// Optional explicit redirect URI to use for the OIDC callback.
+    /// Set this in the secret as 'redirectUri' to pin it to a known value —
+    /// e.g. https://mcp-server.local/auth/oidc/callback
+    /// When absent, the URI is derived dynamically from the incoming request.
     /// </summary>
-    public string DefaultRole     { get; private set; } = "viewer";
+    public string? RedirectUri { get; private set; }
+
+    // Resolved from OIDC discovery document
+    public string? AuthorizationEndpoint { get; set; }
+    public string? TokenEndpoint         { get; set; }
 
     // ── Loader ────────────────────────────────────────────────────────────────
 
@@ -75,7 +58,7 @@ public class OidcConfig
         {
             var secret = await k8s.ReadNamespacedSecretAsync(SecretName, ns);
             string Get(string key) =>
-                secret.Data.TryGetValue(key, out var v) ? System.Text.Encoding.UTF8.GetString(v) : "";
+                secret.Data.TryGetValue(key, out var v) ? Encoding.UTF8.GetString(v) : "";
 
             cfg.Enabled         = Get("enabled").Equals("true", StringComparison.OrdinalIgnoreCase);
             cfg.Authority       = Get("authority").TrimEnd('/');
@@ -85,6 +68,7 @@ public class OidcConfig
             cfg.DefaultRole     = string.IsNullOrWhiteSpace(Get("defaultRole"))   ? "viewer" : Get("defaultRole");
             cfg.AdminValues     = Get("adminValues").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             cfg.OperatorValues  = Get("operatorValues").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            cfg.RedirectUri     = string.IsNullOrWhiteSpace(Get("redirectUri")) ? null : Get("redirectUri");
 
             if (cfg.Enabled)
                 log.LogInformation("[OIDC] External auth enabled. Authority: {Authority}", cfg.Authority);
@@ -102,10 +86,6 @@ public class OidcConfig
         return cfg;
     }
 
-    /// <summary>
-    /// Maps a set of provider group/role claim values to a kuberniq role.
-    /// Returns null if no matching mapping found (caller should use DefaultRole).
-    /// </summary>
     public string MapRole(IEnumerable<string> claimValues)
     {
         foreach (var v in claimValues)
@@ -115,4 +95,27 @@ public class OidcConfig
         }
         return DefaultRole;
     }
+
+    // ── PKCE helpers ──────────────────────────────────────────────────────────
+
+    public static string GenerateCodeVerifier()
+    {
+        var bytes = RandomNumberGenerator.GetBytes(64);
+        return Base64UrlEncode(bytes);
+    }
+
+    public static string GenerateCodeChallenge(string verifier)
+    {
+        var hash = SHA256.HashData(Encoding.ASCII.GetBytes(verifier));
+        return Base64UrlEncode(hash);
+    }
+
+    public static string GenerateState() =>
+        Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+
+    static string Base64UrlEncode(byte[] bytes) =>
+        Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 }

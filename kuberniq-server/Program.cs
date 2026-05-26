@@ -115,6 +115,28 @@ await authService.GetOrCreateSigningKeyAsync();
 var oidcConfig    = await OidcConfig.LoadAsync(clusterRegistry["local"], mcpNamespace, app.Logger);
 var oidcValidator = new OidcValidator(oidcConfig, app.Logger);
 
+// Discover authorization + token endpoints from the provider's well-known doc
+if (oidcConfig.Enabled && !string.IsNullOrWhiteSpace(oidcConfig.Authority))
+{
+    try
+    {
+        using var discoveryHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var discoveryJson = await discoveryHttp.GetStringAsync(
+            $"{oidcConfig.Authority}/.well-known/openid-configuration");
+        using var doc = System.Text.Json.JsonDocument.Parse(discoveryJson);
+        oidcConfig.AuthorizationEndpoint = doc.RootElement.GetProperty("authorization_endpoint").GetString();
+        oidcConfig.TokenEndpoint         = doc.RootElement.GetProperty("token_endpoint").GetString();
+        app.Logger.LogInformation("[OIDC] Discovered authorization_endpoint: {Ep}", oidcConfig.AuthorizationEndpoint);
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "[OIDC] Could not fetch discovery document — login redirect will be unavailable.");
+    }
+}
+
+// In-memory PKCE state store (state → code_verifier). Entries expire after 10 min.
+var oidcStateStore = new System.Collections.Concurrent.ConcurrentDictionary<string, (string Verifier, DateTime Expiry)>();
+
 // First-run bootstrap: auto-create 'admin' user with a random password stored
 // in the 'kuberniq-admin-initial-password' Secret (ArgoCD-style).
 // Retrieve it with:
@@ -146,7 +168,8 @@ app.Use(async (ctx, next) =>
     var path = ctx.Request.Path.Value ?? "";
     // Only unauthenticated auth endpoints are public; user-management endpoints require a token
     bool isPublic = path == "/health" || path == "/" ||
-                    path == "/auth/login" || path == "/auth/refresh" || path == "/auth/logout";
+                    path == "/auth/login"        || path == "/auth/refresh" || path == "/auth/logout" ||
+                    path == "/auth/oidc/login"   || path == "/auth/oidc/callback" || path == "/auth/oidc/config";
 
     if (!isPublic)
     {
@@ -266,6 +289,131 @@ app.MapPost("/auth/logout", async (RefreshRequest req) =>
 {
     await authService.RevokeRefreshTokenAsync(req.RefreshToken ?? "");
     return Results.Ok(new { message = "Logged out." });
+});
+
+// ── OIDC Phase 2: browser login redirect ─────────────────────────────────────
+
+// GET /auth/oidc/config — tells the dashboard whether OIDC is enabled (public)
+app.MapGet("/auth/oidc/config", () => Results.Ok(new
+{
+    enabled      = oidcConfig.Enabled && oidcConfig.AuthorizationEndpoint is not null,
+    providerName = oidcConfig.Enabled ? DeriveProviderName(oidcConfig.Authority) : null
+}));
+
+// GET /auth/oidc/login — redirect browser to provider's authorization endpoint
+app.MapGet("/auth/oidc/login", (HttpContext ctx) =>
+{
+    if (!oidcConfig.Enabled || oidcConfig.AuthorizationEndpoint is null)
+        return Results.BadRequest(new { error = "OIDC is not configured." });
+    if (string.IsNullOrWhiteSpace(oidcConfig.ClientId))
+        return Results.BadRequest(new { error = "OIDC clientId is not configured." });
+
+    var state    = OidcConfig.GenerateState();
+    var verifier = OidcConfig.GenerateCodeVerifier();
+    var challenge = OidcConfig.GenerateCodeChallenge(verifier);
+
+    // Store state → verifier for 10 minutes
+    oidcStateStore[state] = (verifier, DateTime.UtcNow.AddMinutes(10));
+
+    // Clean up expired states
+    foreach (var key in oidcStateStore.Keys.ToList())
+        if (oidcStateStore.TryGetValue(key, out var entry) && entry.Expiry < DateTime.UtcNow)
+            oidcStateStore.TryRemove(key, out _);
+
+    var redirectUri = !string.IsNullOrWhiteSpace(oidcConfig.RedirectUri)
+        ? oidcConfig.RedirectUri
+        : $"{ctx.Request.Scheme}://{ctx.Request.Host}/auth/oidc/callback";
+    var authUrl = oidcConfig.AuthorizationEndpoint
+        + $"?client_id={Uri.EscapeDataString(oidcConfig.ClientId)}"
+        + $"&response_type=code"
+        + $"&redirect_uri={Uri.EscapeDataString(redirectUri)}"
+        + $"&scope={Uri.EscapeDataString("openid profile email")}"
+        + $"&state={Uri.EscapeDataString(state)}"
+        + $"&code_challenge={Uri.EscapeDataString(challenge)}"
+        + $"&code_challenge_method=S256";
+
+    return Results.Redirect(authUrl);
+});
+
+// GET /auth/oidc/callback — provider redirects here with ?code=...&state=...
+app.MapGet("/auth/oidc/callback", async (HttpContext ctx) =>
+{
+    var code  = ctx.Request.Query["code"].FirstOrDefault();
+    var state = ctx.Request.Query["state"].FirstOrDefault();
+    var error = ctx.Request.Query["error"].FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(error))
+    {
+        var desc = ctx.Request.Query["error_description"].FirstOrDefault() ?? error;
+        return Results.Redirect($"/?oidc_error={Uri.EscapeDataString(desc)}");
+    }
+
+    if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
+        return Results.Redirect("/?oidc_error=Missing+code+or+state");
+
+    if (!oidcStateStore.TryRemove(state, out var stateEntry) || stateEntry.Expiry < DateTime.UtcNow)
+        return Results.Redirect("/?oidc_error=Invalid+or+expired+state");
+
+    // Exchange authorization code for tokens
+    // Prefer the pinned redirectUri from the secret; fall back to deriving from the request.
+    var redirectUri = !string.IsNullOrWhiteSpace(oidcConfig.RedirectUri)
+        ? oidcConfig.RedirectUri
+        : $"{ctx.Request.Scheme}://{ctx.Request.Host}/auth/oidc/callback";
+    using var http  = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+    var body = new FormUrlEncodedContent(new Dictionary<string, string>
+    {
+        ["grant_type"]    = "authorization_code",
+        ["code"]          = code,
+        ["redirect_uri"]  = redirectUri,
+        ["client_id"]     = oidcConfig.ClientId,
+        ["client_secret"] = oidcConfig.ClientSecret,
+        ["code_verifier"] = stateEntry.Verifier,
+    });
+
+    HttpResponseMessage tokenResp;
+    try   { tokenResp = await http.PostAsync(oidcConfig.TokenEndpoint, body); }
+    catch { return Results.Redirect("/?oidc_error=Token+endpoint+unreachable"); }
+
+    if (!tokenResp.IsSuccessStatusCode)
+    {
+        var errBody = await tokenResp.Content.ReadAsStringAsync();
+        app.Logger.LogWarning("[OIDC] Token exchange failed ({Status}): {Body}", (int)tokenResp.StatusCode, errBody);
+        // Try to extract a human-readable error from the response
+        string friendlyErr = "Token exchange failed";
+        try
+        {
+            using var errDoc = System.Text.Json.JsonDocument.Parse(errBody);
+            if (errDoc.RootElement.TryGetProperty("error_description", out var ed))
+                friendlyErr = ed.GetString() ?? friendlyErr;
+            else if (errDoc.RootElement.TryGetProperty("error", out var e))
+                friendlyErr = e.GetString() ?? friendlyErr;
+        }
+        catch { }
+        return Results.Redirect($"/?oidc_error={Uri.EscapeDataString(friendlyErr)}");
+    }
+
+    var tokenJson = await tokenResp.Content.ReadAsStringAsync();
+    using var tokenDoc = System.Text.Json.JsonDocument.Parse(tokenJson);
+    var idToken = tokenDoc.RootElement.TryGetProperty("id_token", out var idTokEl)
+        ? idTokEl.GetString() : null;
+
+    if (string.IsNullOrWhiteSpace(idToken))
+        return Results.Redirect("/?oidc_error=No+id_token+in+response");
+
+    // Validate the ID token and map to a kuberniq role
+    var oidcResult = await oidcValidator.ValidateAsync(idToken);
+    if (oidcResult is null)
+        return Results.Redirect("/?oidc_error=ID+token+validation+failed");
+
+    // Issue a kuberniq JWT so the dashboard works identically to local login
+    var kuberniqTokens = await authService.IssueTokensAsync(oidcResult.Username, oidcResult.Role);
+
+    // Redirect back to the dashboard with the tokens in the fragment (never hits server logs)
+    var fragment = $"#oidc_access={Uri.EscapeDataString(kuberniqTokens.AccessToken)}"
+                 + $"&oidc_refresh={Uri.EscapeDataString(kuberniqTokens.RefreshToken)}"
+                 + $"&oidc_expires={kuberniqTokens.ExpiresIn}";
+
+    return Results.Redirect("/" + fragment);
 });
 
 // ── User management (admin only) ──────────────────────────────────────────────
@@ -1237,4 +1385,14 @@ app.MapGet("/namespaces/{ns}/replicasets", async (string ns) =>
 });
 
 app.Run();
+
+// ── Local helpers ─────────────────────────────────────────────────────────────
+static string DeriveProviderName(string authority)
+{
+    if (authority.Contains("microsoftonline.com")) return "Microsoft";
+    if (authority.Contains("cognito-idp"))          return "AWS Cognito";
+    if (authority.Contains("accounts.google.com"))  return "Google";
+    if (authority.Contains("okta.com"))             return "Okta";
+    return "SSO";
+}
 record RegisterClusterRequest(string Name, string Server, string? CaData, string Token);

@@ -141,6 +141,10 @@
   .login-error{color:var(--danger);font-size:.8rem;text-align:center;min-height:1.1em;width:100%}
   .login-hint{font-size:.72rem;color:var(--muted);text-align:center;line-height:1.5}
   .login-hint code{font-family:'Cascadia Code','Fira Code',monospace;background:var(--surface2);border:1px solid var(--border);padding:.1rem .35rem;border-radius:4px;font-size:.7rem;color:var(--accent2)}
+  .login-divider{width:100%;display:flex;align-items:center;gap:.75rem;color:var(--muted);font-size:.75rem}
+  .login-divider::before,.login-divider::after{content:'';flex:1;height:1px;background:var(--border)}
+  .login-sso-btn{width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:.75rem;font-size:.875rem;font-weight:600;cursor:pointer;transition:border-color .15s,background .15s;display:flex;align-items:center;justify-content:center;gap:.6rem;text-decoration:none}
+  .login-sso-btn:hover{border-color:var(--accent);background:var(--surface)}
 </style>
 </head>
 <body>
@@ -169,6 +173,13 @@
     </div>
     <p class="login-error" id="login-error"></p>
     <button class="login-btn" id="login-btn" onclick="doLogin()">Sign in</button>
+    <div id="sso-section" style="display:none;width:100%;display:none;flex-direction:column;gap:.9rem">
+      <div class="login-divider">or</div>
+      <a id="sso-btn" href="/auth/oidc/login" class="login-sso-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+        <span id="sso-btn-label">Sign in with SSO</span>
+      </a>
+    </div>
     <p class="login-hint">First time? Retrieve the admin password with:<br/>
       <code id="login-hint-cmd">kubectl get secret kuberniq-admin-initial-password -n &lt;namespace&gt; -o jsonpath='{.data.password}' | base64 -d</code>
     </p>
@@ -488,11 +499,40 @@ async function tryRefreshToken() {
   });
 
   // Populate the hint with the correct namespace from the server
+  let healthData = {};
   try {
-    const health = await fetch('/health').then(r => r.json());
-    const ns = health.ns || '<namespace>';
+    healthData = await fetch('/health').then(r => r.json());
+    const ns = healthData.ns || '<namespace>';
     document.getElementById('login-hint-cmd').textContent =
       `kubectl get secret kuberniq-admin-initial-password -n ${ns} -o jsonpath='{.data.password}' | base64 -d`;
+  } catch(_) {}
+
+  // ── OIDC callback: tokens arrive in the URL fragment after redirect ────────
+  // e.g. /#oidc_access=...&oidc_refresh=...&oidc_expires=3600
+  const frag = new URLSearchParams(window.location.hash.slice(1));
+  if (frag.has('oidc_access')) {
+    setTokens(frag.get('oidc_access'), frag.get('oidc_refresh') || '');
+    // Clean the fragment from the URL so tokens aren't visible in history
+    history.replaceState(null, '', window.location.pathname);
+    hideLogin();
+    await initDashboard();
+    return;
+  }
+  if (frag.has('oidc_error')) {
+    showLogin(decodeURIComponent(frag.get('oidc_error')));
+    history.replaceState(null, '', window.location.pathname);
+    return;
+  }
+
+  // ── Show SSO button if OIDC is enabled ────────────────────────────────────
+  try {
+    const oidcCfg = await fetch('/auth/oidc/config').then(r => r.json());
+    if (oidcCfg.enabled) {
+      const ssoSection = document.getElementById('sso-section');
+      ssoSection.style.display = 'flex';
+      document.getElementById('sso-btn-label').textContent =
+        `Sign in with ${oidcCfg.providerName || 'SSO'}`;
+    }
   } catch(_) {}
 
   if (!getToken()) {

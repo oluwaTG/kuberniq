@@ -9,7 +9,9 @@ Designed to run in-cluster and serve as the data layer for the Kuberniq dashboar
 
 - **JWT authentication** — all routes are protected; login via `POST /auth/login`, tokens stored in-browser
 - **ArgoCD-style bootstrap** — first-run auto-creates an `admin` user with a random password stored in a K8s Secret; no setup wizard needed
-- **Full SPA dashboard** at `/` — login page, sidebar navigation, namespace switcher, resource tables, log viewer
+- **Role-based access control** — three built-in roles: `admin`, `operator`, `viewer`
+- **External OIDC authentication (Phase 1)** — accepts JWTs from any OIDC-compliant provider (Entra ID, AWS Cognito, Google, Okta); enabled via a single K8s Secret; disabled by default
+- **Full SPA dashboard** at `/` — login page, collapsible sidebar navigation, namespace switcher, resource tables, log viewer, user management (admin)
 - **Live cluster data** — 40+ endpoints covering every major Kubernetes resource type
 - **Multi-cluster support** — register remote clusters via `POST /clusters`; all endpoints accept `?cluster=<name>`
 - **Multi-container log support** — view logs per container or all containers merged in one call
@@ -18,12 +20,21 @@ Designed to run in-cluster and serve as the data layer for the Kuberniq dashboar
 - **In-cluster & local** — uses in-cluster config when deployed, falls back to `~/.kube/config` locally
 - **Helm packaged** — distributed as a Helm chart with fully overridable `values.yaml`
 - **ArgoCD managed** — GitOps deployment via ArgoCD Application manifests
+- **Multi-arch Docker image** — built for `linux/amd64` and `linux/arm64`
 
 ---
 
 ## Authentication
 
-All API endpoints (except `GET /` and `GET /health`) require a valid JWT `Bearer` token.
+All API endpoints (except `GET /`, `GET /health`, `POST /auth/login`, `POST /auth/refresh`, and `POST /auth/logout`) require a valid JWT `Bearer` token.
+
+### Roles
+
+| Role | Permissions |
+|------|-------------|
+| `admin` | Full access — cluster reads, troubleshoot, user management |
+| `operator` | Cluster reads + troubleshoot — no user management |
+| `viewer` | Cluster reads only |
 
 ### First-run bootstrap
 
@@ -59,7 +70,7 @@ All tokens are stored in browser `localStorage`. Access tokens are sent as `Auth
 # List users
 GET  /auth/users
 
-# Create a user  (role: "admin" or "viewer")
+# Create a user  (role: "admin", "operator", or "viewer")
 POST /auth/users        {"username":"alice","password":"...","role":"viewer"}
 
 # Delete a user
@@ -68,6 +79,87 @@ DELETE /auth/users/{username}
 # Change your own password (any authenticated user)
 POST /auth/change-password   {"currentPassword":"...","newPassword":"..."}
 ```
+
+---
+
+## External OIDC Authentication (Phase 1)
+
+kuberniq-server can validate JWTs issued by an external OIDC provider alongside its own local tokens. This is **disabled by default** and requires no code changes — everything is configured via a K8s Secret.
+
+**Supported providers:** Entra ID (Azure AD) · AWS Cognito · Google · Okta · any OIDC-compliant issuer
+
+### How it works
+
+When a request arrives with a `Bearer` token:
+1. The server first tries to validate it as a local kuberniq JWT
+2. If that fails **and** OIDC is enabled, it validates the token against the provider's JWKS
+3. Group/role claims are mapped to kuberniq roles (`admin` / `operator` / `viewer`)
+4. Local tokens continue to work unchanged — OIDC is purely additive
+
+### Enable OIDC — create the config Secret
+
+**Entra ID (Azure AD)**
+```bash
+kubectl create secret generic kuberniq-oidc-config \
+  -n <server-namespace> \
+  --from-literal=enabled=true \
+  --from-literal=authority=https://login.microsoftonline.com/<tenantId>/v2.0 \
+  --from-literal=clientId=<app-registration-client-id> \
+  --from-literal=clientSecret=<client-secret> \
+  --from-literal=roleClaimType=roles \
+  --from-literal=adminValues=kuberniq-admins \
+  --from-literal=operatorValues=kuberniq-operators \
+  --from-literal=defaultRole=viewer
+```
+
+**AWS Cognito**
+```bash
+kubectl create secret generic kuberniq-oidc-config \
+  -n <server-namespace> \
+  --from-literal=enabled=true \
+  --from-literal=authority=https://cognito-idp.<region>.amazonaws.com/<userPoolId> \
+  --from-literal=clientId=<cognito-app-client-id> \
+  --from-literal=roleClaimType=cognito:groups \
+  --from-literal=adminValues=kuberniq-admins \
+  --from-literal=defaultRole=viewer
+```
+
+**Google**
+```bash
+kubectl create secret generic kuberniq-oidc-config \
+  -n <server-namespace> \
+  --from-literal=enabled=true \
+  --from-literal=authority=https://accounts.google.com \
+  --from-literal=clientId=<client-id>.apps.googleusercontent.com \
+  --from-literal=roleClaimType=groups \
+  --from-literal=defaultRole=viewer
+```
+
+### Secret fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `enabled` | ✅ | Set to `true` to activate OIDC |
+| `authority` | ✅ | Issuer base URL — must expose `/.well-known/openid-configuration` |
+| `clientId` | ✅ | App/client ID from your provider |
+| `clientSecret` | Phase 2 only | Not required for token validation |
+| `roleClaimType` | ✅ | JWT claim holding groups/roles (`roles`, `cognito:groups`, `groups`) |
+| `adminValues` | Optional | Comma-separated group names → `admin` role |
+| `operatorValues` | Optional | Comma-separated group names → `operator` role |
+| `defaultRole` | Optional | Fallback role for unmatched users (default: `viewer`) |
+
+### Restart and verify
+
+```bash
+# Restart the pod to pick up the new secret
+kubectl rollout restart deployment/kuberniq-server -n <server-namespace>
+
+# Verify OIDC is loaded
+curl http://<host>/health
+# → {"status":"ok","oidc":{"enabled":true,"authority":"https://..."}}
+```
+
+> **Phase 2** (browser login redirect + `/auth/oidc/login` callback) is on the roadmap — see below.
 
 ---
 
@@ -187,7 +279,7 @@ Click **Logs** on any pod row to open the slide-up log panel:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | SPA dashboard (login page if unauthenticated) |
-| GET | `/health` | Health probe — returns `{"status":"ok","ns":"<namespace>"}` |
+| GET | `/health` | Health probe — returns `{"status":"ok","ns":"<ns>","oidc":{"enabled":false}}` |
 | POST | `/auth/login` | Login — body `{"username":"...","password":"..."}`, returns `accessToken` + `refreshToken` |
 | POST | `/auth/refresh` | Rotate tokens — body `{"refreshToken":"..."}` |
 | POST | `/auth/logout` | Revoke refresh token — body `{"refreshToken":"..."}` |
@@ -320,10 +412,11 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 ## Security Notes
 
-- **JWT authentication** is enabled by default — all API routes require a `Bearer` token.
+- **JWT authentication** is enabled by default — all API routes (except login/refresh/logout) require a `Bearer` token.
 - Access tokens expire after **1 hour**; refresh tokens after **30 days**. Tokens are rotated on refresh.
 - Passwords are hashed with **bcrypt** (work factor 12) and stored as K8s Secrets.
 - The JWT signing key is auto-generated on first run and stored as a K8s Secret.
+- **External OIDC** tokens are validated against the provider's JWKS endpoint. Signing keys are cached for 24 hours and auto-refreshed on rotation. OIDC is disabled unless the `kuberniq-oidc-config` Secret exists with `enabled=true`.
 - The ClusterRole is **read-only**. No write, delete, or exec permissions are granted.
 - Secret values are never returned — only key names are exposed.
 - Delete the `kuberniq-admin-initial-password` Secret after changing the admin password.
@@ -333,6 +426,13 @@ Click **Logs** on any pod row to open the slide-up log panel:
 ## Roadmap
 
 - [x] Authentication (JWT with bcrypt + K8s Secret storage)
+- [x] Role-based access control (`admin` / `operator` / `viewer`)
+- [x] User management dashboard (admin-only UI page)
+- [x] Collapsible sidebar navigation
+- [x] External OIDC authentication — Phase 1: token validation (Entra ID, Cognito, Google, Okta)
+- [x] Multi-arch Docker image (`amd64` + `arm64`)
+- [ ] External OIDC — Phase 2: browser login redirect (`/auth/oidc/login` + callback)
+- [ ] External OIDC — Phase 3: role sync / first-login provisioning
 - [ ] Multi-cluster support (UI cluster switcher)
 - [ ] Rate limiting and response caching
 - [ ] Cluster-wide health summary endpoint (`/summary`)

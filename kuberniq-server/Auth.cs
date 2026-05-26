@@ -390,6 +390,14 @@ public class AuthService
         var expiresAt = DateTimeOffset.UtcNow.AddDays(RefreshTokenDays);
 
         var secretName = $"kuberniq-rt-{Guid.NewGuid():N}";
+        // K8s label values must match [A-Za-z0-9._-] and start/end with alphanumeric.
+        // Replace any invalid character (e.g. '@' in email usernames) with '_'.
+        var usernameLabel = System.Text.RegularExpressions.Regex.Replace(username, @"[^A-Za-z0-9.\-_]", "_");
+        if (usernameLabel.Length > 0 && !char.IsLetterOrDigit(usernameLabel[0]))
+            usernameLabel = "u" + usernameLabel;
+        if (usernameLabel.Length > 63) usernameLabel = usernameLabel[..63];
+        if (usernameLabel.Length > 0 && !char.IsLetterOrDigit(usernameLabel[^1]))
+            usernameLabel = usernameLabel[..^1] + "0";
         var secret = new V1Secret
         {
             Metadata = new V1ObjectMeta
@@ -399,7 +407,7 @@ public class AuthService
                 Labels            = new Dictionary<string, string>
                 {
                     [UserLabelType]          = RefreshLabelValue,
-                    ["kuberniq.io/username"] = username
+                    ["kuberniq.io/username"] = usernameLabel   // sanitised for K8s; raw value is in StringData
                 }
             },
             StringData = new Dictionary<string, string>

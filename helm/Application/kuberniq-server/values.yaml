@@ -14,8 +14,8 @@ fullnameOverride: ""
 # ------------------------------------------------------------------------------
 image:
   repository: elumole22/kuberniq-server
-  tag: "1.0.4"
-  pullPolicy: IfNotPresent
+  tag: "latest"
+  pullPolicy: Always
 
 # List of pre-existing pull-secret names, e.g.:
 #   - name: my-registry-secret
@@ -131,6 +131,30 @@ env: []
 #     secretKeyRef:
 #       name: my-secret
 #       key: my-key
+
+# ------------------------------------------------------------------------------
+# OIDC / SSO (optional)
+# The server reads OIDC configuration from a Kubernetes Secret in its own
+# namespace.  Create the secret before installing the chart:
+#
+#   kubectl create secret generic kuberniq-oidc-config \
+#     -n <release-namespace> \
+#     --from-literal=enabled=true \
+#     --from-literal=authority=https://login.microsoftonline.com/<tenant>/v2.0 \
+#     --from-literal=clientId=<app-client-id> \
+#     --from-literal=clientSecret=<app-client-secret> \
+#     --from-literal=roleClaimType=roles \
+#     --from-literal=adminValues=kuberniq-admins \
+#     --from-literal=operatorValues=kuberniq-operators \
+#     --from-literal=defaultRole=viewer \
+#     --from-literal=redirectUri=https://<your-domain>/auth/oidc/callback   # optional
+#
+# The secret name must match oidc.secretName below.
+# If the secret does not exist, OIDC is silently disabled and local-auth only
+# is available.
+# ------------------------------------------------------------------------------
+oidc:
+  secretName: "kuberniq-oidc-config"
 
 # ------------------------------------------------------------------------------
 # Scheduling

@@ -3,10 +3,11 @@ name: kuberniq-server
 description: >
   Kuberniq Server — a read-only Kubernetes API backend.
   Exposes cluster resources via REST, enables multi-cluster routing via
-  ?cluster=<name>, and powers the Kuberniq Chat AI assistant.
+  ?cluster=<name>, powers the Kuberniq Chat AI assistant, and includes
+  JWT-based local auth with optional OIDC/SSO (Entra ID, Okta, etc.).
 type: application
-version: 1.0.0
-appVersion: "1.0.3"
+version: 1.2.0
+appVersion: "1.2.0"
 
 keywords:
   - kubernetes

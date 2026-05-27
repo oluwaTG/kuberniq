@@ -6,8 +6,8 @@ description: >
   ?cluster=<name>, powers the Kuberniq Chat AI assistant, and includes
   JWT-based local auth with optional OIDC/SSO (Entra ID, Okta, etc.).
 type: application
-version: 1.2.0
-appVersion: "1.2.0"
+version: 1.0.1
+appVersion: "1.0.10"
 
 keywords:
   - kubernetes

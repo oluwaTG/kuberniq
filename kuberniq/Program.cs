@@ -106,61 +106,8 @@ sealed class LoginCommand : AsyncCommand<LoginSettings>
             return 1;
         }
 
-        // ── Check whether auth is enabled ──────────────────────────────────────
-        // GET /auth/oidc/config is public; we use GET /health status to check,
-        // but the simplest signal is: try a login, if 404 → no auth → save bare config.
-        var username = s.Username;
-        var password = s.Password;
-
-        if (string.IsNullOrWhiteSpace(username))
-            username = AnsiConsole.Ask<string>("Username:");
-
-        if (string.IsNullOrWhiteSpace(password))
-            password = AnsiConsole.Prompt(
-                new TextPrompt<string>("Password:").Secret());
-
-        AnsiConsole.Markup("  Authenticating... ");
-
-        string? accessToken = null, refreshToken = null;
-
-        try
-        {
-            using var http = new HttpClient();
-            var loginResp = await http.PostAsJsonAsync(
-                $"{url}/auth/login",
-                new { username, password });
-
-            if (loginResp.StatusCode == System.Net.HttpStatusCode.NotFound)
-            {
-                // Server has no auth — save bare config
-                AnsiConsole.MarkupLine("[grey](server has no auth enabled)[/]");
-            }
-            else if (!loginResp.IsSuccessStatusCode)
-            {
-                var body = await loginResp.Content.ReadAsStringAsync();
-                AnsiConsole.MarkupLine($"\n[red]✗[/] Login failed ({(int)loginResp.StatusCode}): {Markup.Escape(body)}");
-                return 1;
-            }
-            else
-            {
-                var data = await loginResp.Content.ReadFromJsonAsync<JsonElement>();
-                accessToken  = data.GetProperty("accessToken").GetString();
-                refreshToken = data.GetProperty("refreshToken").GetString();
-                AnsiConsole.MarkupLine("[green]✓[/]");
-            }
-        }
-        catch (Exception ex)
-        {
-            AnsiConsole.MarkupLine($"\n[red]✗[/] Login request failed: {ex.Message}");
-            return 1;
-        }
-
-        KuberniqConfigManager.Save(new KuberniqConfig(
-            url,
-            AccessToken:  accessToken,
-            RefreshToken: refreshToken));
-
-        AnsiConsole.MarkupLine($"[green]✓[/] Logged in as [bold]{username}[/]. Config saved to [grey]~/.kuberniq/config.json[/].");
+        KuberniqConfigManager.Save(new KuberniqConfig(url));
+        AnsiConsole.MarkupLine($"[green]✓[/] Authenticated. Config saved to [grey]~/.kuberniq/config.json[/].");
         AnsiConsole.MarkupLine("  Run [cyan]kuberniq cluster add <name>[/] to register your first cluster.");
         return 0;
     }
@@ -251,13 +198,13 @@ sealed class ClusterAddSettings : CommandSettings
 
     [CommandOption("-c|--context")]
     [Description("Kubeconfig context for the target cluster. " +
-                 "If omitted, kubeai shows an interactive selection menu.")]
+                 "If omitted, kuberniq shows an interactive selection menu.")]
     public string? Context { get; init; }
 
     [CommandOption("--sa-name")]
-    [Description("Name of the ServiceAccount to create in the target cluster (default: kubeai)")]
-    [DefaultValue("kubeai")]
-    public string SaName { get; init; } = "kubeai";
+    [Description("Name of the ServiceAccount to create in the target cluster (default: kuberniq)")]
+    [DefaultValue("kuberniq")]
+    public string SaName { get; init; } = "kuberniq";
 
     [CommandOption("--sa-namespace")]
     [Description("Namespace for the ServiceAccount (default: kuberniq-server, created if absent)")]
@@ -747,9 +694,9 @@ sealed class ClusterRemoveSettings : CommandSettings
     public string Name { get; init; } = "";
 
     [CommandOption("--sa-name")]
-    [Description("ServiceAccount name that was created during add (default: kubeai)")]
-    [DefaultValue("kubeai")]
-    public string SaName { get; init; } = "kubeai";
+    [Description("ServiceAccount name that was created during add (default: kuberniq)")]
+    [DefaultValue("kuberniq")]
+    public string SaName { get; init; } = "kuberniq";
 
     [CommandOption("--sa-namespace")]
     [Description("Namespace the ServiceAccount lives in (default: kuberniq-server)")]

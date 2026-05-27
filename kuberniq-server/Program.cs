@@ -650,10 +650,42 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/events", async (string ns, string pod) =
 });
 
 
-app.MapGet("/namespaces/{ns}/pods/{pod}/logs", async (string ns, string pod, string? container = null, int? tail = 200) =>
+// ── Log helpers ───────────────────────────────────────────────────────────────
+// Convert an ISO-8601 sinceTime query string into sinceSeconds for the k8s client.
+// The k8s client (v19) exposes sinceSeconds but not sinceTime directly.
+// We compute elapsed seconds = max(1, (UtcNow – parsedTime).TotalSeconds).
+int? SinceTimeToSeconds(string? raw)
 {
+    if (string.IsNullOrWhiteSpace(raw)) return null;
+    if (DateTimeOffset.TryParse(raw, null,
+            System.Globalization.DateTimeStyles.RoundtripKind, out var dto))
+    {
+        var secs = (int)Math.Max(1, (DateTimeOffset.UtcNow - dto).TotalSeconds);
+        return secs;
+    }
+    return null;
+}
+
+// When sinceTime is used we want timestamps on every line so the chatbot (and the
+// caller) can filter up to an optional untilTime client-side.
+// tail is ignored when sinceTime is set (we fetch from that point forward, up to 5000 lines).
+app.MapGet("/namespaces/{ns}/pods/{pod}/logs", async (
+    string ns, string pod,
+    string? container   = null,
+    int?    tail        = 200,
+    string? sinceTime   = null,
+    int?    sinceSeconds = null) =>
+{
+    var computedSince = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
+    bool   useTimestamps = computedSince.HasValue;
+    int?   effectiveTail = useTimestamps ? 5000 : tail;
+
     using var logStream = await WithK8sRetryAsync(c =>
-        c.ReadNamespacedPodLogAsync(pod, ns, container: container, tailLines: tail));
+        c.ReadNamespacedPodLogAsync(pod, ns,
+            container:    container,
+            tailLines:    effectiveTail,
+            sinceSeconds: computedSince,
+            timestamps:   useTimestamps ? true : null));
     string logText = string.Empty;
     if (logStream != null)
     {
@@ -664,8 +696,16 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs", async (string ns, string pod, str
 });
 
 // Fetch logs from ALL containers in a pod, returned as a JSON map { containerName -> logText }
-app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (string ns, string pod, int? tail = 200) =>
+app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (
+    string ns, string pod,
+    int?    tail         = 200,
+    string? sinceTime    = null,
+    int?    sinceSeconds = null) =>
 {
+    var computedSince  = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
+    bool useTimestamps = computedSince.HasValue;
+    int? effectiveTail = useTimestamps ? 5000 : tail;
+
     var podObj = await WithK8sRetryAsync(c => c.ReadNamespacedPodAsync(pod, ns));
     var containerNames = podObj.Spec?.Containers?.Select(c => c.Name).ToList() ?? [];
     var result = new Dictionary<string, string>();
@@ -674,7 +714,11 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (string ns, string pod,
         try
         {
             using var logStream = await WithK8sRetryAsync(c =>
-                c.ReadNamespacedPodLogAsync(pod, ns, container: cname, tailLines: tail));
+                c.ReadNamespacedPodLogAsync(pod, ns,
+                    container:    cname,
+                    tailLines:    effectiveTail,
+                    sinceSeconds: computedSince,
+                    timestamps:   useTimestamps ? true : null));
             if (logStream != null)
             {
                 using var reader = new StreamReader(logStream);
@@ -690,12 +734,24 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (string ns, string pod,
 });
 
 // Per-container logs via clean REST path: /namespaces/{ns}/pods/{pod}/containers/{container}/logs
-app.MapGet("/namespaces/{ns}/pods/{pod}/containers/{container}/logs", async (string ns, string pod, string container, int? tail = 200) =>
+app.MapGet("/namespaces/{ns}/pods/{pod}/containers/{container}/logs", async (
+    string ns, string pod, string container,
+    int?    tail         = 200,
+    string? sinceTime    = null,
+    int?    sinceSeconds = null) =>
 {
     try
     {
+        var computedSince  = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
+        bool useTimestamps = computedSince.HasValue;
+        int? effectiveTail = useTimestamps ? 5000 : tail;
+
         using var logStream = await WithK8sRetryAsync(c =>
-            c.ReadNamespacedPodLogAsync(pod, ns, container: container, tailLines: tail));
+            c.ReadNamespacedPodLogAsync(pod, ns,
+                container:    container,
+                tailLines:    effectiveTail,
+                sinceSeconds: computedSince,
+                timestamps:   useTimestamps ? true : null));
         string logText = string.Empty;
         if (logStream != null)
         {

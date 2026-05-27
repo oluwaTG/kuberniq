@@ -55,7 +55,7 @@ public static class ClusterRegistrar
             await UpsertServiceAccountAsync(k8s, saName, saNamespace, ct);
 
             // ── 3. ClusterRole ──────────────────────────────────────────────────
-            progress.Report("Applying ClusterRole 'kubeai-mcp-reader'");
+            progress.Report("Applying ClusterRole 'kuberniq-mcp-reader'");
             await UpsertClusterRoleAsync(k8s, ct);
 
             // ── 4. ClusterRoleBinding ───────────────────────────────────────────

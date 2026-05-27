@@ -1,85 +1,59 @@
-# kuberniq-chat
+# Kuberniq Chat
 
 An AI-powered Kubernetes assistant built with Streamlit and GPT-4o.  
-Answers are grounded entirely in **live cluster data** fetched from [kuberniq-server](../kuberniq-server/README.md) — no hallucinated pod names, no stale state.
+Answers are grounded entirely in **live cluster data** fetched from the [Kuberniq Server](../kuberniq-server/README.md) — no hallucinated pod names, no stale state.
 
 ---
 
 ## Features
 
 - **Natural language queries** — ask about pods, logs, events, deployments, jobs, HPA, and more
-- **JWT authentication** — authenticates to kuberniq-server with a dedicated service account; token cached and refreshed transparently
-- **Smart entity extraction** — identifies namespaces, pod names, app names, and container names from plain English
-- **Intent routing** — maps each question to the right set of API endpoints automatically
-- **Auto-troubleshoot mode** — fans out across events, logs, deployment state, HPA, and resource quotas in one turn
+- **MCP server authentication** — logs in with username/password, sends Bearer tokens, and auto-refreshes on 401
+- **LLM entity extraction** — uses `gpt-4o-mini` to identify namespaces, pod names, app names, and containers from plain English, including follow-up references like "that pod" or "same namespace as before"
+- **Conversation-aware context** — passes recent chat history to the entity extractor so follow-up questions resolve correctly without repeating the pod/namespace
+- **Time-bounded log queries** — ask for logs "between 10am Monday and 11pm today" or "last 2 hours" in any format; the chatbot resolves the window and passes it to the MCP server
+- **Intent routing** — maps each question to only the relevant MCP endpoints; doesn't fetch everything on every request
+- **Auto-troubleshoot mode** — fans out across events, logs, deployment state, HPA, and resource quotas in one go when you ask to troubleshoot or debug a service
 - **Container-aware logs** — fetch logs for a named container or all containers merged
-- **App-name log resolution** — say "get logs from the devops-helper app" and it finds the matching pods automatically
+- **App-name log resolution** — say "get logs from the devops-helper app" and it finds matching pods automatically across all namespaces
+- **Structured context formatting** — pods, events, and deployments are rendered as compact markdown tables; errors are surfaced clearly; sections are capped at 8 000 chars to prevent context overflow
 - **YAML manifest analysis** — upload a Kubernetes YAML and get a security + misconfiguration review
+- **Dark dashboard theme** — matches the Kuberniq Server dashboard aesthetic
+- **Configurable model** — switch between `gpt-4o`, `gpt-4o-mini`, or any OpenAI model via env var
+- **Debug mode** — set `DEBUG_MCP=true` locally to see the raw MCP data used for each answer
 - **Helm packaged** — deploy to any cluster with one command
 
 ---
 
 ## Prerequisites
 
-- A running [kuberniq-server](../kuberniq-server/README.md) (`>= 1.1.0`) reachable from the chatbot
+- A running [Kuberniq Server](../kuberniq-server/README.md) reachable from the chatbot
 - An OpenAI API key
-- A `viewer` service account on the server (see [Authentication](#authentication) below)
-
----
-
-## Authentication
-
-Since kuberniq-server `1.1.0`, all API endpoints require a JWT. The chatbot authenticates as a dedicated **viewer** service account — not admin credentials.
-
-### 1. Create the service account on the server
-
-```bash
-# Get an admin token first
-TOKEN=$(curl -s -X POST http://<server>/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"<admin-password>"}' \
-  | jq -r .accessToken)
-
-# Create the viewer account the chatbot will use
-curl -X POST http://<server>/auth/users \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"kuberniq-chat","password":"<strong-password>","role":"viewer"}'
-```
-
-### 2. Store the credentials as a Kubernetes Secret
-
-```bash
-kubectl create secret generic kuberniq-chat-mcp-auth \
-  --from-literal=username=kuberniq-chat \
-  --from-literal=password=<strong-password> \
-  -n kuberniq-chat
-```
-
-The Helm chart injects this Secret as `MCP_USERNAME` / `MCP_PASSWORD` environment variables. The chatbot logs in once at startup and silently refreshes the JWT when it expires — no login overhead on every request.
-
-### Local dev (no auth)
-
-If `MCP_PASSWORD` is not set, the chatbot skips authentication entirely. This is backward-compatible with a locally run server that has no auth configured.
+- MCP server credentials (username + password)
 
 ---
 
 ## Quick Local Run
 
 ```bash
-cd mcp-chatbot
-python -m venv venv && source venv/bin/activate
+cd kuberniq-chat
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create a `.env` file (never committed):
+Create a `.env` file (never commit this — it contains real credentials):
 
 ```env
 OPENAI_API_KEY=sk-...
-MCP_SERVER_URL=http://localhost:8080
-# Optional — omit if running the server locally without auth
-MCP_USERNAME=kuberniq-chat
-MCP_PASSWORD=<strong-password>
+MCP_SERVER_URL=http://localhost:5165
+MCP_USERNAME=admin
+MCP_PASSWORD=your-password-here
+
+# Optional — defaults to gpt-4o
+OPENAI_MODEL=gpt-4o
+
+# Optional — uncomment locally to see raw MCP data in the UI
+# DEBUG_MCP=true
 ```
 
 Run:
@@ -88,7 +62,50 @@ Run:
 streamlit run app.py
 ```
 
-Open `http://localhost:8501` in your browser.
+Open `http://localhost:8501` in your browser (or `8502` if `8501` is already in use).
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `OPENAI_API_KEY` | ✅ | — | OpenAI API key |
+| `MCP_SERVER_URL` | ✅ | `http://mcp-server.local` | Base URL of the Kuberniq Server |
+| `MCP_USERNAME` | ✅ | `admin` | Username for MCP server login |
+| `MCP_PASSWORD` | ✅ | — | Password for MCP server login |
+| `OPENAI_MODEL` | — | `gpt-4o` | OpenAI model used for answering questions |
+| `DEBUG_MCP` | — | `false` | Set to `true` to show raw MCP context in the UI (local dev only) |
+
+---
+
+## Authentication
+
+The chatbot authenticates with the MCP server using JWT:
+
+1. On the first request, it calls `POST /auth/login` with `MCP_USERNAME` + `MCP_PASSWORD`
+2. The returned `accessToken` is sent as a `Bearer` header on every MCP API call
+3. If a request returns `401`, the chatbot automatically calls `POST /auth/refresh` using the `refreshToken`
+4. If the refresh also fails, it re-runs the full login flow
+
+No credentials are ever sent to OpenAI — only the formatted cluster data.
+
+---
+
+## Time-bounded Log Queries
+
+You can ask for logs scoped to a specific time window in any natural language format:
+
+```
+Check the logs between 10am Monday and 11pm today for any errors
+Show me logs from the api-server in the prod namespace since yesterday 3pm
+Get logs from the last 2 hours for the devops-helper app
+Show logs on Tuesday between 09:00 and 17:00
+```
+
+The chatbot uses a fast `gpt-4o-mini` call to resolve relative references ("today", "last Monday", "now") against the current UTC time and converts them to ISO-8601 timestamps. These are passed to the MCP server as `?sinceTime=...`, which forwards them to the Kubernetes API. Kubernetes returns timestamped log lines; the LLM then filters to only lines within the requested window.
+
+> **Note**: Kubernetes supports a start time (`sinceTime`) natively. End-time filtering is applied client-side from the timestamped lines returned.
 
 ---
 
@@ -97,10 +114,10 @@ Open `http://localhost:8501` in your browser.
 ```bash
 docker run -p 8501:8501 \
   -e OPENAI_API_KEY=sk-... \
-  -e MCP_SERVER_URL=http://your-kuberniq-server:8080 \
-  -e MCP_USERNAME=kuberniq-chat \
-  -e MCP_PASSWORD=<strong-password> \
-  elumole22/kuberniq-chat:1.0.1
+  -e MCP_SERVER_URL=http://your-mcp-server:5165 \
+  -e MCP_USERNAME=admin \
+  -e MCP_PASSWORD=your-password \
+  elumole22/kuberniq-chat:latest
 ```
 
 ---
@@ -110,15 +127,9 @@ docker run -p 8501:8501 \
 ### 1. Create secrets (once per namespace)
 
 ```bash
-# OpenAI API key
 kubectl create secret generic kuberniq-chat-secrets \
   --from-literal=OPENAI_API_KEY=sk-... \
-  -n kuberniq-chat
-
-# MCP Server credentials (viewer account created above)
-kubectl create secret generic kuberniq-chat-mcp-auth \
-  --from-literal=username=kuberniq-chat \
-  --from-literal=password=<strong-password> \
+  --from-literal=MCP_PASSWORD=your-password \
   -n kuberniq-chat
 ```
 
@@ -131,7 +142,8 @@ cd kuberniq
 helm upgrade --install kuberniq-chat helm/Application/kuberniq-chat \
   --namespace kuberniq-chat \
   --create-namespace \
-  --set mcpServerUrl=http://kuberniq-server.kuberniq-server.svc.cluster.local:8080
+  --set mcpServerUrl=http://kuberniq-server.kuberniq-server.svc.cluster.local:5165 \
+  --set mcpUsername=admin
 ```
 
 ### 3. Access the UI
@@ -142,20 +154,16 @@ kubectl port-forward svc/kuberniq-chat 8501:8501 -n kuberniq-chat
 
 Then open `http://localhost:8501`.
 
-### Key values
+### Key Helm values
 
 | Value | Default | Description |
 |---|---|---|
-| `image.tag` | `1.0.1` | Chatbot image version |
-| `mcpServerUrl` | `http://kuberniq-server.kuberniq-server.svc.cluster.local:8080` | Internal kuberniq-server URL |
-| `mcpAuth.secretName` | `kuberniq-chat-mcp-auth` | K8s Secret with `username` + `password` keys |
-| `mcpAuth.usernameKey` | `username` | Key name for the username inside the Secret |
-| `mcpAuth.passwordKey` | `password` | Key name for the password inside the Secret |
-| `ingress.enabled` | `true` | Expose the UI via Ingress |
-| `ingress.hosts[0].host` | `mcp-chatbot.local` | Ingress hostname |
-| `resources.limits.memory` | `512Mi` | Memory limit for the pod |
-
-See `helm/Application/kuberniq-chat/values.yaml` for the full list.
+| `image.tag` | `latest` | Chatbot image version |
+| `mcpServerUrl` | `http://kuberniq-server.kuberniq-server.svc.cluster.local:5165` | Internal MCP Server URL |
+| `mcpUsername` | `admin` | MCP server username |
+| `openaiModel` | `gpt-4o` | OpenAI model to use |
+| `debugMcp` | `false` | Enable raw MCP context panel in UI |
+| `secretName` | `kuberniq-chat-secrets` | Kubernetes Secret holding `OPENAI_API_KEY` and `MCP_PASSWORD` |
 | `openaiSecretKey` | `OPENAI_API_KEY` | Key name inside the Secret |
 | `ingress.enabled` | `false` | Expose the UI via Ingress |
 | `ingress.tls` | `[]` | TLS config for external access |

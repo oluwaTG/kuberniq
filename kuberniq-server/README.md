@@ -1,7 +1,7 @@
-# kuberniq-server
+# Kuberniq Server
 
-A lightweight .NET 10 minimal API that exposes Kubernetes cluster context over HTTP, secured with JWT authentication.  
-Designed to run in-cluster and serve as the data layer for the Kuberniq dashboard and MCP RAG Chatbot.
+A lightweight .NET 10 minimal API that exposes read-only Kubernetes cluster context over HTTP.  
+Designed to run in-cluster and serve as the data layer for the Kuberniq Chat and the `kuberniq` CLI.
 
 ---
 
@@ -13,153 +13,15 @@ Designed to run in-cluster and serve as the data layer for the Kuberniq dashboar
 - **External OIDC authentication (Phase 1)** — accepts JWTs from any OIDC-compliant provider (Entra ID, AWS Cognito, Google, Okta); enabled via a single K8s Secret; disabled by default
 - **Full SPA dashboard** at `/` — login page, collapsible sidebar navigation, namespace switcher, resource tables, log viewer, user management (admin)
 - **Live cluster data** — 40+ endpoints covering every major Kubernetes resource type
-- **Multi-cluster support** — register remote clusters via `POST /clusters`; all endpoints accept `?cluster=<name>`
+- **JWT authentication** — login endpoint issues access + refresh tokens; all API endpoints require a valid Bearer token
+- **Full SPA dashboard** at `/` — sidebar navigation, namespace switcher, resource tables, log viewer
+- **Time-bounded log queries** — pass `?sinceTime=` (ISO-8601 UTC) or `?sinceSeconds=N` to fetch logs from a specific point in time; timestamps are automatically prepended to every line when a time window is requested
 - **Multi-container log support** — view logs per container or all containers merged in one call
+- **Multi-cluster support** — register remote clusters via `POST /clusters`; all endpoints gain `?cluster=<name>` routing
 - **Auto-reconnect** — recreates the Kubernetes client automatically on SSL/connection drops
 - **Troubleshoot endpoint** — aggregates pods, events and logs for a service in one call
 - **In-cluster & local** — uses in-cluster config when deployed, falls back to `~/.kube/config` locally
 - **Helm packaged** — distributed as a Helm chart with fully overridable `values.yaml`
-- **ArgoCD managed** — GitOps deployment via ArgoCD Application manifests
-- **Multi-arch Docker image** — built for `linux/amd64` and `linux/arm64`
-
----
-
-## Authentication
-
-All API endpoints (except `GET /`, `GET /health`, `POST /auth/login`, `POST /auth/refresh`, and `POST /auth/logout`) require a valid JWT `Bearer` token.
-
-### Roles
-
-| Role | Permissions |
-|------|-------------|
-| `admin` | Full access — cluster reads, troubleshoot, user management |
-| `operator` | Cluster reads + troubleshoot — no user management |
-| `viewer` | Cluster reads only |
-
-### First-run bootstrap
-
-On first start, the server auto-creates an `admin` user and stores the random password in a K8s Secret:
-
-```bash
-# Get the namespace the server is running in (shown in server startup logs)
-kubectl get secret kuberniq-admin-initial-password \
-  -n <server-namespace> \
-  -o jsonpath='{.data.password}' | base64 -d
-```
-
-> The login page hint automatically shows the exact command with the correct namespace.
-
-Delete the secret after changing your password:
-```bash
-kubectl delete secret kuberniq-admin-initial-password -n <server-namespace>
-```
-
-### Token flow
-
-| Step | Request |
-|------|---------|
-| Login | `POST /auth/login` → returns `accessToken` (1 hr) + `refreshToken` (30 days) |
-| Refresh | `POST /auth/refresh` → rotates both tokens |
-| Logout | `POST /auth/logout` → revokes the refresh token |
-
-All tokens are stored in browser `localStorage`. Access tokens are sent as `Authorization: Bearer <token>` on every API call. Expired access tokens are silently refreshed.
-
-### User management (admin only)
-
-```bash
-# List users
-GET  /auth/users
-
-# Create a user  (role: "admin", "operator", or "viewer")
-POST /auth/users        {"username":"alice","password":"...","role":"viewer"}
-
-# Delete a user
-DELETE /auth/users/{username}
-
-# Change your own password (any authenticated user)
-POST /auth/change-password   {"currentPassword":"...","newPassword":"..."}
-```
-
----
-
-## External OIDC Authentication (Phase 1)
-
-kuberniq-server can validate JWTs issued by an external OIDC provider alongside its own local tokens. This is **disabled by default** and requires no code changes — everything is configured via a K8s Secret.
-
-**Supported providers:** Entra ID (Azure AD) · AWS Cognito · Google · Okta · any OIDC-compliant issuer
-
-### How it works
-
-When a request arrives with a `Bearer` token:
-1. The server first tries to validate it as a local kuberniq JWT
-2. If that fails **and** OIDC is enabled, it validates the token against the provider's JWKS
-3. Group/role claims are mapped to kuberniq roles (`admin` / `operator` / `viewer`)
-4. Local tokens continue to work unchanged — OIDC is purely additive
-
-### Enable OIDC — create the config Secret
-
-**Entra ID (Azure AD)**
-```bash
-kubectl create secret generic kuberniq-oidc-config \
-  -n <server-namespace> \
-  --from-literal=enabled=true \
-  --from-literal=authority=https://login.microsoftonline.com/<tenantId>/v2.0 \
-  --from-literal=clientId=<app-registration-client-id> \
-  --from-literal=clientSecret=<client-secret> \
-  --from-literal=roleClaimType=roles \
-  --from-literal=adminValues=kuberniq-admins \
-  --from-literal=operatorValues=kuberniq-operators \
-  --from-literal=defaultRole=viewer
-```
-
-**AWS Cognito**
-```bash
-kubectl create secret generic kuberniq-oidc-config \
-  -n <server-namespace> \
-  --from-literal=enabled=true \
-  --from-literal=authority=https://cognito-idp.<region>.amazonaws.com/<userPoolId> \
-  --from-literal=clientId=<cognito-app-client-id> \
-  --from-literal=roleClaimType=cognito:groups \
-  --from-literal=adminValues=kuberniq-admins \
-  --from-literal=defaultRole=viewer
-```
-
-**Google**
-```bash
-kubectl create secret generic kuberniq-oidc-config \
-  -n <server-namespace> \
-  --from-literal=enabled=true \
-  --from-literal=authority=https://accounts.google.com \
-  --from-literal=clientId=<client-id>.apps.googleusercontent.com \
-  --from-literal=roleClaimType=groups \
-  --from-literal=defaultRole=viewer
-```
-
-### Secret fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `enabled` | ✅ | Set to `true` to activate OIDC |
-| `authority` | ✅ | Issuer base URL — must expose `/.well-known/openid-configuration` |
-| `clientId` | ✅ | App/client ID from your provider |
-| `clientSecret` | Phase 2 only | Not required for token validation |
-| `roleClaimType` | ✅ | JWT claim holding groups/roles (`roles`, `cognito:groups`, `groups`) |
-| `adminValues` | Optional | Comma-separated group names → `admin` role |
-| `operatorValues` | Optional | Comma-separated group names → `operator` role |
-| `defaultRole` | Optional | Fallback role for unmatched users (default: `viewer`) |
-
-### Restart and verify
-
-```bash
-# Restart the pod to pick up the new secret
-kubectl rollout restart deployment/kuberniq-server -n <server-namespace>
-
-# Verify OIDC is loaded
-curl http://<host>/health
-# → {"status":"ok","oidc":{"enabled":true,"authority":"https://..."}}
-```
-
-> **Phase 2** (browser login redirect + `/auth/oidc/login` callback) is on the roadmap — see below.
 
 ---
 
@@ -172,27 +34,60 @@ curl http://<host>/health
    dotnet restore
    dotnet run
    ```
-3. Open `http://localhost:8080` in your browser.
+3. Open `http://localhost:5165` in your browser.
 
 The service reads `~/.kube/config` when running locally, and uses in-cluster credentials when deployed.
 
 ---
 
-## Deploy with Helm
+## Authentication
 
-The chart is published in this repository under `helm/Application/kuberniq-server/`.  
-Anyone with `kubectl` access to a cluster can install it directly — no ArgoCD required.
+All API endpoints (except `GET /health` and the SPA at `GET /`) require a valid Bearer token.
 
-### Install
+### Login
 
-```bash
-helm upgrade --install kuberniq-server \
-  oci://raw.githubusercontent.com/oluwaTG/kuberniq/main/helm/Application/kuberniq-server \
-  --namespace kuberniq-server \
-  --create-namespace
+```
+POST /auth/login
+Content-Type: application/json
+
+{ "username": "admin", "password": "your-password" }
 ```
 
-Or clone the repo and install from the local path:
+Response:
+
+```json
+{
+  "accessToken": "eyJ...",
+  "refreshToken": "eyJ..."
+}
+```
+
+### Refresh
+
+```
+POST /auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "eyJ..." }
+```
+
+Returns a new `accessToken` and `refreshToken`. Use this when the access token expires (response `401`) instead of re-entering credentials.
+
+### Using the token
+
+Pass the `accessToken` as a Bearer header on every request:
+
+```
+Authorization: Bearer eyJ...
+```
+
+---
+
+## Deploy with Helm
+
+The chart is published in this repository under `helm/Application/kuberniq-server/`.
+
+### Install
 
 ```bash
 git clone https://github.com/oluwaTG/kuberniq.git
@@ -205,20 +100,11 @@ helm upgrade --install kuberniq-server helm/Application/kuberniq-server \
 
 ### Install with custom values
 
-Override any value inline or with your own values file:
-
 ```bash
-# Override the ingress hostname
 helm upgrade --install kuberniq-server helm/Application/kuberniq-server \
   --namespace kuberniq-server \
   --create-namespace \
   --set ingress.hosts[0].host=kuberniq-server.yourdomain.com
-
-# Or use a custom values file
-helm upgrade --install kuberniq-server helm/Application/kuberniq-server \
-  --namespace kuberniq-server \
-  --create-namespace \
-  --values my-values.yaml
 ```
 
 ### Uninstall
@@ -232,7 +118,7 @@ helm uninstall kuberniq-server --namespace kuberniq-server
 | Value | Default | Description |
 |-------|---------|-------------|
 | `image.repository` | `elumole22/kuberniq-server` | Container image registry and name |
-| `image.tag` | `1.1.0` | Image tag — update on every release |
+| `image.tag` | `1.0.7` | Image tag — update on every release |
 | `ingress.enabled` | `true` | Enable/disable the ingress |
 | `ingress.hosts[0].host` | `kuberniq-server.local` | Hostname for the dashboard |
 | `ingress.className` | `nginx` | Ingress class (change if using Traefik, etc.) |
@@ -274,24 +160,12 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 ## Endpoints
 
-### Authentication (public)
+### Auth
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | SPA dashboard (login page if unauthenticated) |
-| GET | `/health` | Health probe — returns `{"status":"ok","ns":"<ns>","oidc":{"enabled":false}}` |
-| POST | `/auth/login` | Login — body `{"username":"...","password":"..."}`, returns `accessToken` + `refreshToken` |
-| POST | `/auth/refresh` | Rotate tokens — body `{"refreshToken":"..."}` |
-| POST | `/auth/logout` | Revoke refresh token — body `{"refreshToken":"..."}` |
-
-### Authentication (protected)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/auth/users` | List users (admin only) |
-| POST | `/auth/users` | Create user (admin only) — body `{"username","password","role"}` |
-| DELETE | `/auth/users/{username}` | Delete user (admin only) |
-| POST | `/auth/change-password` | Change own password — body `{"currentPassword","newPassword"}` |
+| POST | `/auth/login` | Login with `{username, password}` — returns `{accessToken, refreshToken}` |
+| POST | `/auth/refresh` | Refresh with `{refreshToken}` — returns a new token pair |
 
 ### Core
 
@@ -314,12 +188,20 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/namespaces/{ns}/pods` | List pods with ready count (`2/2`), phase, restarts, per-container status |
+| GET | `/namespaces/{ns}/pods` | List pods with ready count, phase, restarts, per-container status |
 | GET | `/namespaces/{ns}/pods/{pod}/events` | Events scoped to a single pod |
-| GET | `/namespaces/{ns}/pods/{pod}/logs?tail=200` | Default container logs (last N lines) |
-| GET | `/namespaces/{ns}/pods/{pod}/logs/all?tail=200` | All containers' logs as `{ containerName: logText }` |
+| GET | `/namespaces/{ns}/pods/{pod}/logs` | Default container logs — supports `?tail=N`, `?sinceTime=`, `?sinceSeconds=N` |
+| GET | `/namespaces/{ns}/pods/{pod}/logs/all` | All containers' logs as `{ containerName: logText }` — same time params supported |
 | GET | `/namespaces/{ns}/pods/{pod}/containers` | List containers with image, ports, resource requests/limits, live status |
-| GET | `/namespaces/{ns}/pods/{pod}/containers/{container}/logs?tail=200` | Logs for a specific container by name |
+| GET | `/namespaces/{ns}/pods/{pod}/containers/{container}/logs` | Logs for a specific container — same time params supported |
+
+#### Log query parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tail` | int | Lines to return (default 200). Ignored when `sinceTime` or `sinceSeconds` is set — 5 000 lines are fetched instead. |
+| `sinceTime` | ISO-8601 UTC string | Return only logs on or after this timestamp, e.g. `2026-05-26T10:00:00Z`. Timestamps are prepended to every returned line. |
+| `sinceSeconds` | int | Return only logs from the last N seconds. Takes precedence over `tail`. |
 
 ### Metrics
 
@@ -402,11 +284,22 @@ Click **Logs** on any pod row to open the slide-up log panel:
 | GET | `/namespaces/{ns}/resourcequotas` | Resource quotas with hard limits vs current usage |
 | GET | `/namespaces/{ns}/limitranges` | LimitRanges with min/max/default per resource |
 
+### Multi-cluster
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/clusters` | List all registered clusters |
+| GET | `/clusters/{name}` | Details for a single registered cluster |
+| POST | `/clusters` | Register a remote cluster `{name, server, caData, token}` |
+| DELETE | `/clusters/{name}` | Unregister a cluster and delete its stored Secret |
+
+All resource endpoints accept `?cluster=<name>` to target a registered remote cluster.
+
 ### Troubleshoot
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/troubleshoot/service/{ns}/{name}` | Aggregated pods + events + last 200 log lines for a service or deployment name |
+| GET | `/troubleshoot/service/{ns}/{name}` | Aggregated pods + events + last 200 log lines for a service or deployment |
 
 ---
 
@@ -419,21 +312,16 @@ Click **Logs** on any pod row to open the slide-up log panel:
 - **External OIDC** tokens are validated against the provider's JWKS endpoint. Signing keys are cached for 24 hours and auto-refreshed on rotation. OIDC is disabled unless the `kuberniq-oidc-config` Secret exists with `enabled=true`.
 - The ClusterRole is **read-only**. No write, delete, or exec permissions are granted.
 - Secret values are never returned — only key names are exposed.
-- Delete the `kuberniq-admin-initial-password` Secret after changing the admin password.
+- All endpoints except `/health` and the dashboard require a valid JWT Bearer token.
+- Sanitize logs before forwarding to any external LLM API to avoid leaking sensitive data.
 
 ---
 
 ## Roadmap
 
-- [x] Authentication (JWT with bcrypt + K8s Secret storage)
-- [x] Role-based access control (`admin` / `operator` / `viewer`)
-- [x] User management dashboard (admin-only UI page)
-- [x] Collapsible sidebar navigation
-- [x] External OIDC authentication — Phase 1: token validation (Entra ID, Cognito, Google, Okta)
-- [x] Multi-arch Docker image (`amd64` + `arm64`)
-- [ ] External OIDC — Phase 2: browser login redirect (`/auth/oidc/login` + callback)
-- [ ] External OIDC — Phase 3: role sync / first-login provisioning
-- [ ] Multi-cluster support (UI cluster switcher)
+- [x] JWT authentication (login + refresh)
+- [x] Multi-cluster support
+- [x] Time-bounded log queries (`sinceTime`, `sinceSeconds`, `timestamps`)
 - [ ] Rate limiting and response caching
 - [ ] Cluster-wide health summary endpoint (`/summary`)
 - [ ] WebSocket log streaming (real-time instead of tail)

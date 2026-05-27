@@ -14,8 +14,8 @@ fullnameOverride: ""
 # ------------------------------------------------------------------------------
 image:
   repository: elumole22/kuberniq-server
-  tag: "latest"
-  pullPolicy: Always
+  tag: "1.0.10"
+  pullPolicy: IfNotPresent
 
 # List of pre-existing pull-secret names, e.g.:
 #   - name: my-registry-secret

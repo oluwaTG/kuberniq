@@ -37,18 +37,10 @@ spec:
           env:
             - name: MCP_SERVER_URL
               value: {{ .Values.mcpServerUrl | quote }}
-            {{- if .Values.mcpAuth.secretName }}
-            - name: MCP_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.mcpAuth.secretName }}
-                  key: {{ .Values.mcpAuth.usernameKey }}
-            - name: MCP_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.mcpAuth.secretName }}
-                  key: {{ .Values.mcpAuth.passwordKey }}
-            {{- end }}
+            - name: OPENAI_MODEL
+              value: {{ .Values.openaiModel | quote }}
+            - name: DEBUG_MCP
+              value: {{ .Values.debugMcp | quote }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

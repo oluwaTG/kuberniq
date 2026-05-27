@@ -161,6 +161,12 @@ env:
   - name: OPENAI_API_KEY
     value: "replace-me"
 
+# OpenAI model — override per environment (e.g. gpt-4o-mini for cost saving)
+openaiModel: "gpt-4o"
+
+# Set to "true" to show the Raw MCP data panel in the UI (local dev only)
+debugMcp: "false"
+
 # ------------------------------------------------------------------------------
 # Scheduling
 # ------------------------------------------------------------------------------

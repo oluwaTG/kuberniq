@@ -124,7 +124,7 @@ docker run -p 8501:8501 \
 
 ## Deploy with Helm
 
-### 1. Create the secret (once per namespace)
+### 1. Create secrets (once per namespace)
 
 ```bash
 kubectl create secret generic kuberniq-chat-secrets \
@@ -187,10 +187,12 @@ Are there any HPA scaling issues?
 
 ## Security Notes
 
-- `OPENAI_API_KEY` is **never baked into the image** — it is injected at runtime from a Kubernetes Secret
-- The chatbot has **no Kubernetes permissions** of its own — all cluster access is delegated to the MCP Server
-- For external access, enable `ingress.enabled=true` and populate `ingress.tls` with a cert-manager or pre-provisioned secret
-- Internal-only deployments (default) communicate over HTTP within the cluster network
+- `OPENAI_API_KEY` is **never baked into the image** — injected at runtime from a Kubernetes Secret
+- `MCP_PASSWORD` is **never baked into the image** — injected from the `kuberniq-chat-mcp-auth` Secret
+- The chatbot uses a **viewer** role — it cannot create, modify, or delete any cluster resources
+- The chatbot has **no direct Kubernetes permissions** — all cluster access is delegated to kuberniq-server
+- JWT access tokens expire after **1 hour**; the chatbot refreshes them automatically with no downtime
+- For external access, enable `ingress.enabled=true` and add TLS via cert-manager
 
 ---
 
@@ -200,20 +202,24 @@ Are there any HPA scaling issues?
 User (browser)
      │
      ▼
-┌─────────────────┐        ┌─────────────────┐
-│   MCP Chatbot   │──────▶│   MCP Server    │──────▶ Kubernetes API
-│  Streamlit/GPT  │  HTTP  │  .NET 10 API    │
-└─────────────────┘        └─────────────────┘
+┌──────────────────────┐   JWT Bearer    ┌────────────────────────┐
+│   kuberniq-chat      │────────────────▶│   kuberniq-server      │──▶ Kubernetes API
+│  Streamlit + GPT-4o  │◀────JSON────────│  .NET 10 minimal API   │
+└──────────────────────┘                 └────────────────────────┘
+         │
+         ▼ (OPENAI_API_KEY)
+    OpenAI API (GPT-4o)
 ```
 
 The chatbot never talks to the Kubernetes API directly.  
-All live data flows through the MCP Server, which runs in-cluster with a scoped read-only ServiceAccount.
+All live cluster data flows through kuberniq-server, which runs in-cluster with a scoped read-only ServiceAccount.  
+The chatbot authenticates as a `viewer` — if the server credential is compromised, blast radius is read-only.
 
 ---
 
 ## Roadmap
 
+- [x] JWT authentication for kuberniq-server service-to-service calls
 - [ ] Conversation memory with summarisation for long sessions
-- [ ] Multi-cluster support (switch MCP Server URL mid-session)
-- [ ] Auth proxy support for multi-tenant deployments
+- [ ] Multi-cluster support (switch clusters mid-session)
 - [ ] Streaming log tail (live follow mode)

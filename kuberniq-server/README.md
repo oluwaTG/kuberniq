@@ -7,6 +7,11 @@ Designed to run in-cluster and serve as the data layer for the Kuberniq Chat and
 
 ## Features
 
+- **JWT authentication** — all routes are protected; login via `POST /auth/login`, tokens stored in-browser
+- **ArgoCD-style bootstrap** — first-run auto-creates an `admin` user with a random password stored in a K8s Secret; no setup wizard needed
+- **Role-based access control** — three built-in roles: `admin`, `operator`, `viewer`
+- **External OIDC authentication (Phase 1)** — accepts JWTs from any OIDC-compliant provider (Entra ID, AWS Cognito, Google, Okta); enabled via a single K8s Secret; disabled by default
+- **Full SPA dashboard** at `/` — login page, collapsible sidebar navigation, namespace switcher, resource tables, log viewer, user management (admin)
 - **Live cluster data** — 40+ endpoints covering every major Kubernetes resource type
 - **JWT authentication** — login endpoint issues access + refresh tokens; all API endpoints require a valid Bearer token
 - **Full SPA dashboard** at `/` — sidebar navigation, namespace switcher, resource tables, log viewer
@@ -300,6 +305,11 @@ All resource endpoints accept `?cluster=<name>` to target a registered remote cl
 
 ## Security Notes
 
+- **JWT authentication** is enabled by default — all API routes (except login/refresh/logout) require a `Bearer` token.
+- Access tokens expire after **1 hour**; refresh tokens after **30 days**. Tokens are rotated on refresh.
+- Passwords are hashed with **bcrypt** (work factor 12) and stored as K8s Secrets.
+- The JWT signing key is auto-generated on first run and stored as a K8s Secret.
+- **External OIDC** tokens are validated against the provider's JWKS endpoint. Signing keys are cached for 24 hours and auto-refreshed on rotation. OIDC is disabled unless the `kuberniq-oidc-config` Secret exists with `enabled=true`.
 - The ClusterRole is **read-only**. No write, delete, or exec permissions are granted.
 - Secret values are never returned — only key names are exposed.
 - All endpoints except `/health` and the dashboard require a valid JWT Bearer token.

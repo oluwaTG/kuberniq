@@ -16,7 +16,9 @@ record ClusterInfo(string Name, bool IsLocal);
 record KuberniqConfig(
     string ServerUrl,
     string? DefaultCluster = null,
-    List<LocalClusterEntry>? Clusters = null);
+    List<LocalClusterEntry>? Clusters = null,
+    string? AccessToken = null,
+    string? RefreshToken = null);
 
 static class KuberniqConfigManager
 {

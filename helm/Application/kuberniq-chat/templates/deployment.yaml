@@ -37,6 +37,10 @@ spec:
           env:
             - name: MCP_SERVER_URL
               value: {{ .Values.mcpServerUrl | quote }}
+            - name: OPENAI_MODEL
+              value: {{ .Values.openaiModel | quote }}
+            - name: DEBUG_MCP
+              value: {{ .Values.debugMcp | quote }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

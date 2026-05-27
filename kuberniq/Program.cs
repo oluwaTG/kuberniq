@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using Kuberniq;
@@ -75,6 +76,14 @@ sealed class LoginSettings : CommandSettings
     [CommandArgument(0, "<server-url>")]
     [Description("URL of the MCP server, e.g. http://mcp-server.example.com")]
     public string ServerUrl { get; init; } = "";
+
+    [CommandOption("-u|--username")]
+    [Description("MCP server username (prompted interactively if omitted)")]
+    public string? Username { get; init; }
+
+    [CommandOption("-p|--password")]
+    [Description("MCP server password (prompted interactively if omitted)")]
+    public string? Password { get; init; }
 }
 
 sealed class LoginCommand : AsyncCommand<LoginSettings>
@@ -84,6 +93,7 @@ sealed class LoginCommand : AsyncCommand<LoginSettings>
         var url = s.ServerUrl.TrimEnd('/');
         AnsiConsole.MarkupLine($"Connecting to [cyan]{url}[/]...");
 
+        // ── Health check ───────────────────────────────────────────────────────
         try
         {
             using var http = new HttpClient();
@@ -96,8 +106,61 @@ sealed class LoginCommand : AsyncCommand<LoginSettings>
             return 1;
         }
 
-        KuberniqConfigManager.Save(new KuberniqConfig(url));
-        AnsiConsole.MarkupLine($"[green]✓[/] Authenticated. Config saved to [grey]~/.kubeai/config.json[/].");
+        // ── Check whether auth is enabled ──────────────────────────────────────
+        // GET /auth/oidc/config is public; we use GET /health status to check,
+        // but the simplest signal is: try a login, if 404 → no auth → save bare config.
+        var username = s.Username;
+        var password = s.Password;
+
+        if (string.IsNullOrWhiteSpace(username))
+            username = AnsiConsole.Ask<string>("Username:");
+
+        if (string.IsNullOrWhiteSpace(password))
+            password = AnsiConsole.Prompt(
+                new TextPrompt<string>("Password:").Secret());
+
+        AnsiConsole.Markup("  Authenticating... ");
+
+        string? accessToken = null, refreshToken = null;
+
+        try
+        {
+            using var http = new HttpClient();
+            var loginResp = await http.PostAsJsonAsync(
+                $"{url}/auth/login",
+                new { username, password });
+
+            if (loginResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                // Server has no auth — save bare config
+                AnsiConsole.MarkupLine("[grey](server has no auth enabled)[/]");
+            }
+            else if (!loginResp.IsSuccessStatusCode)
+            {
+                var body = await loginResp.Content.ReadAsStringAsync();
+                AnsiConsole.MarkupLine($"\n[red]✗[/] Login failed ({(int)loginResp.StatusCode}): {Markup.Escape(body)}");
+                return 1;
+            }
+            else
+            {
+                var data = await loginResp.Content.ReadFromJsonAsync<JsonElement>();
+                accessToken  = data.GetProperty("accessToken").GetString();
+                refreshToken = data.GetProperty("refreshToken").GetString();
+                AnsiConsole.MarkupLine("[green]✓[/]");
+            }
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"\n[red]✗[/] Login request failed: {ex.Message}");
+            return 1;
+        }
+
+        KuberniqConfigManager.Save(new KuberniqConfig(
+            url,
+            AccessToken:  accessToken,
+            RefreshToken: refreshToken));
+
+        AnsiConsole.MarkupLine($"[green]✓[/] Logged in as [bold]{username}[/]. Config saved to [grey]~/.kuberniq/config.json[/].");
         AnsiConsole.MarkupLine("  Run [cyan]kuberniq cluster add <name>[/] to register your first cluster.");
         return 0;
     }
@@ -111,6 +174,71 @@ sealed class LogoutCommand : Command
         KuberniqConfigManager.Delete();
         AnsiConsole.MarkupLine("[green]✓[/] Logged out. Config removed.");
         return 0;
+    }
+}
+
+// ── Auth HTTP helpers ──────────────────────────────────────────────────────────
+static class McpHttp
+{
+    /// <summary>
+    /// Returns an HttpClient pre-loaded with the Bearer token from the saved config.
+    /// Automatically tries to refresh the token if it has expired (401 on first use).
+    /// Callers should call EnsureFreshAsync() before sending requests.
+    /// </summary>
+    public static HttpClient MakeClient(KuberniqConfig cfg, TimeSpan? timeout = null)
+    {
+        var http = new HttpClient();
+        if (timeout.HasValue) http.Timeout = timeout.Value;
+        if (!string.IsNullOrWhiteSpace(cfg.AccessToken))
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", cfg.AccessToken);
+        return http;
+    }
+
+    /// <summary>
+    /// If the response is 401, attempts a token refresh and retries the request.
+    /// Returns the (possibly refreshed) response.
+    /// </summary>
+    public static async Task<HttpResponseMessage> SendWithRefreshAsync(
+        HttpClient http,
+        Func<HttpClient, Task<HttpResponseMessage>> send,
+        KuberniqConfig cfg)
+    {
+        var resp = await send(http);
+        if (resp.StatusCode != System.Net.HttpStatusCode.Unauthorized)
+            return resp;
+
+        // Try refresh
+        if (string.IsNullOrWhiteSpace(cfg.RefreshToken))
+            return resp;   // can't refresh — caller will handle 401
+
+        try
+        {
+            using var refreshHttp = new HttpClient();
+            var refreshResp = await refreshHttp.PostAsJsonAsync(
+                $"{cfg.ServerUrl}/auth/refresh",
+                new { refreshToken = cfg.RefreshToken });
+
+            if (!refreshResp.IsSuccessStatusCode)
+                return resp;   // refresh failed — return original 401
+
+            var data    = await refreshResp.Content.ReadFromJsonAsync<JsonElement>();
+            var newAccess  = data.GetProperty("accessToken").GetString();
+            var newRefresh = data.GetProperty("refreshToken").GetString();
+
+            // Persist the new tokens
+            var updated = cfg with { AccessToken = newAccess, RefreshToken = newRefresh };
+            KuberniqConfigManager.Save(updated);
+
+            // Retry with new token
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", newAccess);
+            return await send(http);
+        }
+        catch
+        {
+            return resp;   // return original 401 on any error
+        }
     }
 }
 
@@ -206,10 +334,10 @@ sealed class ClusterAddCommand : AsyncCommand<ClusterAddSettings>
 
         try
         {
-            using var http = new HttpClient();
-            var resp = await http.PostAsJsonAsync(
-                $"{cfg.ServerUrl}/clusters",
-                new { name = s.Name, server, caData, token });
+            using var http = McpHttp.MakeClient(cfg);
+            var resp = await McpHttp.SendWithRefreshAsync(
+                http, h => h.PostAsJsonAsync($"{cfg.ServerUrl}/clusters",
+                    new { name = s.Name, server, caData, token }), cfg);
 
             if (!resp.IsSuccessStatusCode)
             {
@@ -311,9 +439,7 @@ sealed class ClusterShowCommand : AsyncCommand<ClusterShowSettings>
     public override async Task<int> ExecuteAsync(CommandContext ctx, ClusterShowSettings s)
     {
         var cfg = KuberniqConfigManager.LoadOrFail();
-        using var http = new HttpClient();
-
-        // ── 1. Basic cluster record ────────────────────────────────────────────
+        using var http = McpHttp.MakeClient(cfg);
         // GET /clusters/{name} was added in a later server version; fall back to
         // GET /clusters if the server returns 404 or 405 (older deployment).
         ClusterDetail? detail;
@@ -480,10 +606,11 @@ sealed class ClusterPingCommand : AsyncCommand<ClusterPingSettings>
     public override async Task<int> ExecuteAsync(CommandContext ctx, ClusterPingSettings s)
     {
         var cfg = KuberniqConfigManager.LoadOrFail();
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        using var http = McpHttp.MakeClient(cfg, TimeSpan.FromSeconds(10));
 
         // Verify cluster exists first
-        var checkResp = await http.GetAsync($"{cfg.ServerUrl}/clusters/{s.Name}");
+        var checkResp = await McpHttp.SendWithRefreshAsync(
+            http, h => h.GetAsync($"{cfg.ServerUrl}/clusters/{s.Name}"), cfg);
         if (checkResp.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             AnsiConsole.MarkupLine($"[red]✗[/] Cluster [bold]{s.Name}[/] is not registered.");
@@ -578,12 +705,13 @@ sealed class ClusterSetDefaultCommand : AsyncCommand<ClusterSetDefaultSettings>
     public override async Task<int> ExecuteAsync(CommandContext ctx, ClusterSetDefaultSettings s)
     {
         var cfg = KuberniqConfigManager.LoadOrFail();
-        using var http = new HttpClient();
+        using var http = McpHttp.MakeClient(cfg);
 
         // Validate the cluster exists on the MCP server
         try
         {
-            var resp = await http.GetAsync($"{cfg.ServerUrl}/clusters/{s.Name}");
+            var resp = await McpHttp.SendWithRefreshAsync(
+                http, h => h.GetAsync($"{cfg.ServerUrl}/clusters/{s.Name}"), cfg);
             if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 AnsiConsole.MarkupLine($"[red]✗[/] Cluster [bold]{s.Name}[/] is not registered.");
@@ -698,8 +826,9 @@ sealed class ClusterRemoveCommand : AsyncCommand<ClusterRemoveSettings>
         // ── 2. Unregister from the MCP server ──────────────────────────────────
         try
         {
-            using var http = new HttpClient();
-            var resp = await http.DeleteAsync($"{cfg.ServerUrl}/clusters/{s.Name}");
+            using var http = McpHttp.MakeClient(cfg);
+            var resp = await McpHttp.SendWithRefreshAsync(
+                http, h => h.DeleteAsync($"{cfg.ServerUrl}/clusters/{s.Name}"), cfg);
 
             if (!resp.IsSuccessStatusCode)
             {

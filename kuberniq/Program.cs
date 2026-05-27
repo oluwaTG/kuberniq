@@ -97,7 +97,7 @@ sealed class LoginCommand : AsyncCommand<LoginSettings>
         }
 
         KuberniqConfigManager.Save(new KuberniqConfig(url));
-        AnsiConsole.MarkupLine($"[green]✓[/] Authenticated. Config saved to [grey]~/.kubeai/config.json[/].");
+        AnsiConsole.MarkupLine($"[green]✓[/] Authenticated. Config saved to [grey]~/.kuberniq/config.json[/].");
         AnsiConsole.MarkupLine("  Run [cyan]kuberniq cluster add <name>[/] to register your first cluster.");
         return 0;
     }
@@ -123,13 +123,13 @@ sealed class ClusterAddSettings : CommandSettings
 
     [CommandOption("-c|--context")]
     [Description("Kubeconfig context for the target cluster. " +
-                 "If omitted, kubeai shows an interactive selection menu.")]
+                 "If omitted, kuberniq shows an interactive selection menu.")]
     public string? Context { get; init; }
 
     [CommandOption("--sa-name")]
-    [Description("Name of the ServiceAccount to create in the target cluster (default: kubeai)")]
-    [DefaultValue("kubeai")]
-    public string SaName { get; init; } = "kubeai";
+    [Description("Name of the ServiceAccount to create in the target cluster (default: kuberniq)")]
+    [DefaultValue("kuberniq")]
+    public string SaName { get; init; } = "kuberniq";
 
     [CommandOption("--sa-namespace")]
     [Description("Namespace for the ServiceAccount (default: kuberniq-server, created if absent)")]
@@ -619,9 +619,9 @@ sealed class ClusterRemoveSettings : CommandSettings
     public string Name { get; init; } = "";
 
     [CommandOption("--sa-name")]
-    [Description("ServiceAccount name that was created during add (default: kubeai)")]
-    [DefaultValue("kubeai")]
-    public string SaName { get; init; } = "kubeai";
+    [Description("ServiceAccount name that was created during add (default: kuberniq)")]
+    [DefaultValue("kuberniq")]
+    public string SaName { get; init; } = "kuberniq";
 
     [CommandOption("--sa-namespace")]
     [Description("Namespace the ServiceAccount lives in (default: kuberniq-server)")]

@@ -1,20 +1,22 @@
-# MCP Server
+# Kuberniq Server
 
 A lightweight .NET 10 minimal API that exposes read-only Kubernetes cluster context over HTTP.  
-Designed to run in-cluster and serve as the data layer for the MCP RAG Chatbot.
+Designed to run in-cluster and serve as the data layer for the Kuberniq Chat and the `kuberniq` CLI.
 
 ---
 
 ## Features
 
 - **Live cluster data** — 40+ endpoints covering every major Kubernetes resource type
+- **JWT authentication** — login endpoint issues access + refresh tokens; all API endpoints require a valid Bearer token
 - **Full SPA dashboard** at `/` — sidebar navigation, namespace switcher, resource tables, log viewer
+- **Time-bounded log queries** — pass `?sinceTime=` (ISO-8601 UTC) or `?sinceSeconds=N` to fetch logs from a specific point in time; timestamps are automatically prepended to every line when a time window is requested
 - **Multi-container log support** — view logs per container or all containers merged in one call
+- **Multi-cluster support** — register remote clusters via `POST /clusters`; all endpoints gain `?cluster=<name>` routing
 - **Auto-reconnect** — recreates the Kubernetes client automatically on SSL/connection drops
 - **Troubleshoot endpoint** — aggregates pods, events and logs for a service in one call
 - **In-cluster & local** — uses in-cluster config when deployed, falls back to `~/.kube/config` locally
 - **Helm packaged** — distributed as a Helm chart with fully overridable `values.yaml`
-- **ArgoCD managed** — GitOps deployment via ArgoCD Application manifests
 
 ---
 
@@ -27,27 +29,60 @@ Designed to run in-cluster and serve as the data layer for the MCP RAG Chatbot.
    dotnet restore
    dotnet run
    ```
-3. Open `http://localhost:8080` in your browser.
+3. Open `http://localhost:5165` in your browser.
 
 The service reads `~/.kube/config` when running locally, and uses in-cluster credentials when deployed.
 
 ---
 
-## Deploy with Helm
+## Authentication
 
-The chart is published in this repository under `helm/Application/kuberniq-server/`.  
-Anyone with `kubectl` access to a cluster can install it directly — no ArgoCD required.
+All API endpoints (except `GET /health` and the SPA at `GET /`) require a valid Bearer token.
 
-### Install
+### Login
 
-```bash
-helm upgrade --install kuberniq-server \
-  oci://raw.githubusercontent.com/oluwaTG/kuberniq/main/helm/Application/kuberniq-server \
-  --namespace kuberniq-server \
-  --create-namespace
+```
+POST /auth/login
+Content-Type: application/json
+
+{ "username": "admin", "password": "your-password" }
 ```
 
-Or clone the repo and install from the local path:
+Response:
+
+```json
+{
+  "accessToken": "eyJ...",
+  "refreshToken": "eyJ..."
+}
+```
+
+### Refresh
+
+```
+POST /auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "eyJ..." }
+```
+
+Returns a new `accessToken` and `refreshToken`. Use this when the access token expires (response `401`) instead of re-entering credentials.
+
+### Using the token
+
+Pass the `accessToken` as a Bearer header on every request:
+
+```
+Authorization: Bearer eyJ...
+```
+
+---
+
+## Deploy with Helm
+
+The chart is published in this repository under `helm/Application/kuberniq-server/`.
+
+### Install
 
 ```bash
 git clone https://github.com/oluwaTG/kuberniq.git
@@ -60,20 +95,11 @@ helm upgrade --install kuberniq-server helm/Application/kuberniq-server \
 
 ### Install with custom values
 
-Override any value inline or with your own values file:
-
 ```bash
-# Override the ingress hostname
 helm upgrade --install kuberniq-server helm/Application/kuberniq-server \
   --namespace kuberniq-server \
   --create-namespace \
   --set ingress.hosts[0].host=kuberniq-server.yourdomain.com
-
-# Or use a custom values file
-helm upgrade --install kuberniq-server helm/Application/kuberniq-server \
-  --namespace kuberniq-server \
-  --create-namespace \
-  --values my-values.yaml
 ```
 
 ### Uninstall
@@ -87,7 +113,7 @@ helm uninstall kuberniq-server --namespace kuberniq-server
 | Value | Default | Description |
 |-------|---------|-------------|
 | `image.repository` | `elumole22/kuberniq-server` | Container image registry and name |
-| `image.tag` | `1.0.5` | Image tag — update on every release |
+| `image.tag` | `1.0.7` | Image tag — update on every release |
 | `ingress.enabled` | `true` | Enable/disable the ingress |
 | `ingress.hosts[0].host` | `kuberniq-server.local` | Hostname for the dashboard |
 | `ingress.className` | `nginx` | Ingress class (change if using Traefik, etc.) |
@@ -129,6 +155,13 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 ## Endpoints
 
+### Auth
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/auth/login` | Login with `{username, password}` — returns `{accessToken, refreshToken}` |
+| POST | `/auth/refresh` | Refresh with `{refreshToken}` — returns a new token pair |
+
 ### Core
 
 | Method | Path | Description |
@@ -150,12 +183,20 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/namespaces/{ns}/pods` | List pods with ready count (`2/2`), phase, restarts, per-container status |
+| GET | `/namespaces/{ns}/pods` | List pods with ready count, phase, restarts, per-container status |
 | GET | `/namespaces/{ns}/pods/{pod}/events` | Events scoped to a single pod |
-| GET | `/namespaces/{ns}/pods/{pod}/logs?tail=200` | Default container logs (last N lines) |
-| GET | `/namespaces/{ns}/pods/{pod}/logs/all?tail=200` | All containers' logs as `{ containerName: logText }` |
+| GET | `/namespaces/{ns}/pods/{pod}/logs` | Default container logs — supports `?tail=N`, `?sinceTime=`, `?sinceSeconds=N` |
+| GET | `/namespaces/{ns}/pods/{pod}/logs/all` | All containers' logs as `{ containerName: logText }` — same time params supported |
 | GET | `/namespaces/{ns}/pods/{pod}/containers` | List containers with image, ports, resource requests/limits, live status |
-| GET | `/namespaces/{ns}/pods/{pod}/containers/{container}/logs?tail=200` | Logs for a specific container by name |
+| GET | `/namespaces/{ns}/pods/{pod}/containers/{container}/logs` | Logs for a specific container — same time params supported |
+
+#### Log query parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tail` | int | Lines to return (default 200). Ignored when `sinceTime` or `sinceSeconds` is set — 5 000 lines are fetched instead. |
+| `sinceTime` | ISO-8601 UTC string | Return only logs on or after this timestamp, e.g. `2026-05-26T10:00:00Z`. Timestamps are prepended to every returned line. |
+| `sinceSeconds` | int | Return only logs from the last N seconds. Takes precedence over `tail`. |
 
 ### Metrics
 
@@ -238,11 +279,22 @@ Click **Logs** on any pod row to open the slide-up log panel:
 | GET | `/namespaces/{ns}/resourcequotas` | Resource quotas with hard limits vs current usage |
 | GET | `/namespaces/{ns}/limitranges` | LimitRanges with min/max/default per resource |
 
+### Multi-cluster
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/clusters` | List all registered clusters |
+| GET | `/clusters/{name}` | Details for a single registered cluster |
+| POST | `/clusters` | Register a remote cluster `{name, server, caData, token}` |
+| DELETE | `/clusters/{name}` | Unregister a cluster and delete its stored Secret |
+
+All resource endpoints accept `?cluster=<name>` to target a registered remote cluster.
+
 ### Troubleshoot
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/troubleshoot/service/{ns}/{name}` | Aggregated pods + events + last 200 log lines for a service or deployment name |
+| GET | `/troubleshoot/service/{ns}/{name}` | Aggregated pods + events + last 200 log lines for a service or deployment |
 
 ---
 
@@ -250,15 +302,16 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 - The ClusterRole is **read-only**. No write, delete, or exec permissions are granted.
 - Secret values are never returned — only key names are exposed.
-- Add authentication (mTLS, JWT, or an ingress-level token) before exposing the service externally.
+- All endpoints except `/health` and the dashboard require a valid JWT Bearer token.
 - Sanitize logs before forwarding to any external LLM API to avoid leaking sensitive data.
 
 ---
 
 ## Roadmap
 
-- [ ] Authentication (token / mTLS)
-- [ ] Multi-cluster support
+- [x] JWT authentication (login + refresh)
+- [x] Multi-cluster support
+- [x] Time-bounded log queries (`sinceTime`, `sinceSeconds`, `timestamps`)
 - [ ] Rate limiting and response caching
 - [ ] Cluster-wide health summary endpoint (`/summary`)
 - [ ] WebSocket log streaming (real-time instead of tail)

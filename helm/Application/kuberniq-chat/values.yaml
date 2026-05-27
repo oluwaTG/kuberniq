@@ -11,7 +11,7 @@ fullnameOverride: ""
 # ------------------------------------------------------------------------------
 image:
   repository: elumole22/kuberniq-chat
-  tag: "1.0.0"
+  tag: "1.0.1"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -135,6 +135,12 @@ mcpServerUrl: "http://mcp-server.mcp-server.svc.cluster.local:8080"
 env:
   - name: OPENAI_API_KEY
     value: "replace-me"
+
+# OpenAI model — override per environment (e.g. gpt-4o-mini for cost saving)
+openaiModel: "gpt-4o"
+
+# Set to "true" to show the Raw MCP data panel in the UI (local dev only)
+debugMcp: "false"
 
 # ------------------------------------------------------------------------------
 # Scheduling

@@ -1,281 +1,258 @@
-# kuberniq
+# Kuberniq CLI
 
-A CLI for registering and managing remote Kubernetes clusters with the [Kuberniq Server](../kuberniq-server/README.md).
-
-Modelled after `argocd cluster add` — one command sets up everything in the target cluster and registers it with the MCP server so every endpoint gains `?cluster=<name>` routing.
+A cross-platform .NET 10 command-line tool for registering and managing remote Kubernetes clusters with the Kuberniq MCP server.
 
 ---
 
-## Command Reference 
+## Features
 
-| Command | Description |
-|---|---|
-| `kuberniq login <url>` | Authenticate with an MCP server |
-| `kuberniq logout` | Remove the saved connection |
-| `kuberniq cluster add <name>` | Register a cluster with the MCP server |
-| `kuberniq cluster list` | List all registered clusters |
-| `kuberniq cluster show <name>` | Show K8s version, nodes, namespaces and health |
-| `kuberniq cluster ping <name>` | Check latency and reachability |
-| `kuberniq cluster set-default <name>` | Set the default cluster for all commands |
-| `kuberniq cluster remove <name>` | Unregister a cluster |
+- **Login / logout** — authenticate against the MCP server; connection saved to `~/.kuberniq/config.json`
+- **Cluster add** — creates a read-only `ServiceAccount` and `ClusterRoleBinding` in the target cluster, then registers it with the MCP server via `POST /clusters`
+- **Cluster list** — show all registered clusters with type, server URL and default flag
+- **Cluster show** — detailed view of a registered cluster: version, node count, namespaces, reachability
+- **Cluster ping** — latency and connectivity check for any registered cluster
+- **Cluster set-default** — nominate a cluster used when no `?cluster=` flag is supplied
+- **Cluster remove** — unregister a cluster from the MCP server
+- **Interactive context selector** — when `--context` is omitted, displays a menu of all kubeconfig contexts
+- **Spinner + progress feedback** — Spectre.Console animated status while long-running operations complete
+- **Coloured tables and panels** — structured output via Spectre.Console
+
+---
+
+## Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download) (build from source) or the pre-built binary
+- A running instance of **kuberniq-server** (see `kuberniq-server/README.md`)
+- A valid `~/.kube/config` with at least one context when using `cluster add`
 
 ---
 
 ## Installation
 
-### macOS / Linux — one-liner (recommended)
+### From source
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/kuberniq/install.sh | bash
+git clone https://github.com/oluwaTG/kuberniq.git
+cd kuberniq/kuberniq
+dotnet build -c Release
+dotnet run -- --help
 ```
 
-The script auto-detects your OS and architecture, downloads the right pre-built binary from GitHub Releases, and copies it to `/usr/local/bin`. **No .NET runtime required.**
-
-To install a specific version:
+### Publish a self-contained binary
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/kuberniq/install.sh | KUBEAI_VERSION=kuberniq/v1.0.0 bash
+# macOS ARM
+dotnet publish -c Release -r osx-arm64 --self-contained true -o out/
+
+# Linux x64
+dotnet publish -c Release -r linux-x64 --self-contained true -o out/
+
+# Windows x64
+dotnet publish -c Release -r win-x64 --self-contained true -o out/
 ```
 
-To install to a custom directory (e.g. `~/.local/bin`):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/kuberniq/install.sh | KUBEAI_INSTALL_DIR=~/.local/bin bash
-```
+Copy `out/kuberniq` (or `kuberniq.exe` on Windows) to a directory in your `$PATH`.
 
 ---
 
-### Windows
+## Authentication
 
-Download `kuberniq-win-x64.exe` from the [latest GitHub Release](https://github.com/oluwaTG/kuberniq/releases), rename it to `kuberniq.exe`, and place it on your `PATH`.
-
----
-
-### Build from source (developers)
-
-Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download).
+Before running any command you must log in to the MCP server:
 
 ```bash
-cd kuberniq
-make install          # auto-detects OS + arch, builds, copies to /usr/local/bin
-
-# Or for a specific platform:
-make macos-arm64      # → dist/osx-arm64/kuberniq
-make linux-x64        # → dist/linux-x64/kuberniq
-make windows          # → dist/win-x64/kuberniq.exe
-make all-platforms    # builds all four at once
+kuberniq login http://kuberniq-server.example.com
 ```
 
----
+What this does:
+1. Sends `GET /health` to the server to verify it is reachable.
+2. Saves `{ "serverUrl": "..." }` to **`~/.kuberniq/config.json`**.
 
-## Usage
+All subsequent commands (`cluster add`, `cluster list`, etc.) call `LoadOrFail()`, which reads `~/.kuberniq/config.json` and throws an error if the file is missing — so always run `login` first.
 
-### 1. Authenticate
-
-Point `kuberniq` at your running MCP server:
-
-```bash
-kuberniq login http://mcp-server.example.com
-```
-
-This pings `/health`, then saves the server URL to `~/.kuberniq/config.json`.
-
----
-
-### 2. Register a cluster
-
-```bash
-# Interactive — kuberniq shows a selection menu of your kubeconfig contexts
-kuberniq cluster add prod
-
-# Or supply the context directly
-kuberniq cluster add prod --context prod-aks
-```
-
-What happens under the hood:
-1. Connects to the target cluster using the chosen kubeconfig context
-2. Creates a `ServiceAccount` named `kuberniq` in `kube-system`
-3. Creates a `ClusterRole` (read-only, all resources the MCP server queries) + `ClusterRoleBinding`
-4. Creates a `kubernetes.io/service-account-token` Secret for a permanent token
-5. Waits for the token controller to issue the token
-6. Extracts the server URL + CA certificate from your kubeconfig
-7. Calls `POST /clusters` on the MCP server to register everything
-
-After this, every MCP endpoint accepts `?cluster=prod`:
-
-```
-GET /namespaces?cluster=prod
-GET /namespaces/default/pods?cluster=prod
-GET /namespaces/kube-system/pods/coredns-xxx/logs?cluster=prod
-```
-
-Options:
-
-| Flag | Default | Description |
-|---|---|---|
-| `--context` | _interactive_ | Kubeconfig context for the target cluster |
-| `--sa-name` | `kuberniq` | ServiceAccount name to create |
-| `--sa-namespace` | `kube-system` | Namespace for the ServiceAccount |
-| `--skip-rbac` | false | Skip SA/RBAC creation (use if already set up) |
-
----
-
-### 3. List registered clusters
-
-```bash
-kuberniq cluster list
-```
-
-```
-╭──────────┬────────────────────┬────────────────────────────╮
-│ Name     │ Type               │ ?cluster= query param      │
-├──────────┼────────────────────┼────────────────────────────┤
-│ local    │ local (in-cluster) │ (omit for local)           │
-│ prod     │ remote             │ ?cluster=prod              │
-│ staging  │ remote             │ ?cluster=staging           │
-╰──────────┴────────────────────┴────────────────────────────╯
-```
-
----
-
-### 4. Show cluster details
-
-```bash
-kuberniq cluster show prod
-```
-
-Queries the MCP server and the cluster in parallel and renders a full summary:
-
-```
-╭─ Cluster: prod ──────────────────────────────────────╮
-│                                                       │
-│  Name              prod                               │
-│  Type              remote                             │
-│  Server            https://prod-api.example.com       │
-│  Status            ✓ reachable                        │
-│  K8s Version       v1.29.3                            │
-│  Nodes             3/3 Ready                          │
-│    node-1          ●                                  │
-│    node-2          ●                                  │
-│    node-3          ●                                  │
-│  Namespaces        12                                 │
-│  Query param       ?cluster=prod                      │
-│                                                       │
-╰───────────────────────────────────────────────────────╯
-
-Namespaces: default, kube-system, kube-public, payments, ...
-```
-
----
-
-### 5. Ping a cluster
-
-```bash
-kuberniq cluster ping prod
-
-# Send more probes
-kuberniq cluster ping prod --count 10
-```
-
-Sends sequential probes through the MCP server to the cluster's `/cluster/info` endpoint and prints per-probe latency plus a summary:
-
-```
-Pinging cluster prod via http://mcp-server.example.com...
-
-  seq= 1  ✓  42 ms
-  seq= 2  ✓  39 ms
-  seq= 3  ✓  44 ms
-  seq= 4  ✓  41 ms
-
-╭──────┬──────────┬──────┬────────┬────────┬────────╮
-│ Sent │ Received │ Lost │  Min   │  Avg   │  Max   │
-├──────┼──────────┼──────┼────────┼────────┼────────┤
-│  4   │    4     │  0%  │ 39 ms  │ 41 ms  │ 44 ms  │
-╰──────┴──────────┴──────┴────────┴────────┴────────╯
-```
-
-Options:
-
-| Flag | Default | Description |
-|---|---|---|
-| `-n`, `--count` | `4` | Number of probes to send |
-
----
-
-### 6. Set the default cluster
-
-```bash
-kuberniq cluster set-default prod
-```
-
-Saves the default cluster to `~/.kuberniq/config.json`. Cluster commands will target this cluster automatically without requiring `?cluster=` overrides.
-
-```
-✓ Default cluster set to prod.
-  All cluster commands will now target prod unless overridden.
-  Reset anytime with kuberniq cluster set-default local
-```
-
-Reset to the in-cluster (local) client:
-
-```bash
-kuberniq cluster set-default local
-```
-
----
-
-### 7. Remove a cluster
-
-```bash
-kuberniq cluster remove prod
-```
-
-This calls `DELETE /clusters/prod` on the MCP server and removes the persisted Secret.  
-The `ServiceAccount` and `ClusterRole` in the target cluster are **not** deleted — remove them manually if no longer needed:
-
-```bash
-kubectl --context prod-aks delete clusterrolebinding kuberniq-mcp-reader
-kubectl --context prod-aks delete clusterrole       kuberniq-mcp-reader
-kubectl --context prod-aks delete sa kuberniq -n kube-system
-kubectl --context prod-aks delete secret kuberniq-kuberniq-token -n kube-system
-```
-
----
-
-### 8. Log out
+To remove the saved connection:
 
 ```bash
 kuberniq logout
 ```
 
-Removes `~/.kuberniq/config.json`.
+---
+
+## Config file
+
+`~/.kuberniq/config.json`
+
+```json
+{
+  "serverUrl": "http://kuberniq-server.example.com",
+  "defaultCluster": "prod",
+  "clusters": [
+    { "name": "prod",    "isLocal": false, "server": "https://prod-api.example.com" },
+    { "name": "staging", "isLocal": false, "server": "https://staging-api.example.com" }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `serverUrl` | MCP server base URL — set by `kuberniq login` |
+| `defaultCluster` | Cluster used when `?cluster=` is omitted — set by `cluster set-default` |
+| `clusters` | Local cache of registered clusters — updated by `cluster add` / `cluster remove` |
 
 ---
 
-## How cluster credentials are persisted
+## Commands
 
-Registered clusters are stored as Kubernetes Secrets in the MCP server's own namespace, labelled `mcp.io/cluster-type=remote`. The MCP server reads these at startup so clusters survive pod restarts — no re-registration needed after a rollout.
+### `kuberniq login <server-url>`
 
-```
-Secret: mcp-cluster-prod
-  mcp.io/cluster-type: remote
-  mcp.io/cluster-name: prod
-Data:
-  server: https://prod-api.example.com
-  caData: <base64 CA cert>
-  token:  <ServiceAccount token>
-```
-
----
-
-## Publishing a new release
+Authenticate with the MCP server and save the connection.
 
 ```bash
-# Bump the version in kuberniq.csproj, then:
-git add kuberniq/
-git commit -m "chore: release kuberniq v1.1.0"
-git tag kuberniq/v1.1.0
-git push origin main --tags
+kuberniq login http://kuberniq-server.example.com
 ```
 
-The GitHub Actions workflow (`.github/workflows/kuberniq-release.yml`) picks up the tag, builds binaries for all five platforms in parallel (macOS ARM64, macOS x64, Linux x64, Linux ARM64, Windows x64), and publishes them as a GitHub Release. Users then get the new version via the one-liner install script.
+Saves the server URL to `~/.kuberniq/config.json`. If the server cannot be reached the command exits with code 1.
+
+---
+
+### `kuberniq logout`
+
+Remove the saved MCP server connection.
+
+```bash
+kuberniq logout
+```
+
+Deletes `~/.kuberniq/config.json`. Subsequent commands will require `login` to be run again.
+
+---
+
+### `kuberniq cluster add <name>`
+
+Register a remote cluster with the MCP server.
+
+```bash
+# Use a specific kubeconfig context
+kuberniq cluster add prod --context prod-aks
+
+# Pick a context interactively
+kuberniq cluster add staging
+
+# Skip ServiceAccount / RBAC creation if it already exists
+kuberniq cluster add prod --context prod-aks --skip-rbac
+```
+
+#### What it does
+
+1. Resolves the kubeconfig context (interactive selector if `--context` is omitted).
+2. Creates a `Namespace`, `ServiceAccount`, `ClusterRole` (read-only) and `ClusterRoleBinding` in the target cluster using the resolved context (unless `--skip-rbac` is set).
+3. Retrieves a long-lived bearer token for the ServiceAccount.
+4. Calls `POST /clusters` on the MCP server with `{ name, server, caData, token }`.
+5. Saves the cluster entry to the local `~/.kuberniq/config.json`.
+
+After registration every MCP server endpoint accepts `?cluster=<name>`.
+
+#### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--context <name>` | interactive | kubeconfig context for the target cluster |
+| `--sa-name <name>` | `kuberniq` | ServiceAccount name created in the target cluster |
+| `--sa-namespace <ns>` | `kuberniq-server` | Namespace for the ServiceAccount (created if absent) |
+| `--skip-rbac` | false | Skip SA and RBAC creation |
+
+---
+
+### `kuberniq cluster list`
+
+List all clusters registered with the MCP server.
+
+```bash
+kuberniq cluster list
+```
+
+Shows a table with name, type (local in-cluster / remote), server URL and the default cluster marker.
+
+---
+
+### `kuberniq cluster show <name>`
+
+Show detailed information about a registered cluster.
+
+```bash
+kuberniq cluster show prod
+```
+
+Fetches cluster version, node count, namespace list and reachability status from the MCP server in parallel.
+
+---
+
+### `kuberniq cluster ping <name>`
+
+Check latency and reachability of a registered cluster.
+
+```bash
+kuberniq cluster ping prod
+```
+
+---
+
+### `kuberniq cluster set-default <name>`
+
+Set the default cluster used when no `?cluster=` flag is supplied.
+
+```bash
+kuberniq cluster set-default prod
+```
+
+Updates `defaultCluster` in `~/.kuberniq/config.json`.
+
+---
+
+### `kuberniq cluster remove <name>`
+
+Unregister a cluster from the MCP server.
+
+```bash
+kuberniq cluster remove staging
+```
+
+Calls `DELETE /clusters/<name>` on the MCP server and removes the entry from the local config.
+
+---
+
+## Error handling
+
+All commands surface errors as coloured messages:
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | Success |
+| 1 | Error — message printed in red |
+
+If `~/.kuberniq/config.json` is absent when a command that requires authentication is run, you will see:
+
+```
+✗ Not logged in. Run kuberniq login <server-url> first.
+```
+
+---
+
+## Building a release
+
+```bash
+cd kuberniq/kuberniq
+dotnet build -c Release
+```
+
+The binary appears at `bin/Release/net10.0/kuberniq`.
+
+---
+
+## Roadmap
+
+- [x] Login / logout with config persistence at `~/.kuberniq/config.json`
+- [x] Cluster add — automated ServiceAccount + RBAC setup, interactive context selector
+- [x] Cluster list / show / ping / set-default / remove
+- [ ] Bearer-token forwarding to MCP server when the server has JWT auth enabled
+- [ ] `kuberniq status` — quick health summary of all registered clusters
+- [ ] Homebrew / Scoop distribution

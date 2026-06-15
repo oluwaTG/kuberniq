@@ -51,7 +51,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.mcpAuth.secretName }}
                   key: {{ .Values.mcpAuth.passwordKey }}
-            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

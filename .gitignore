@@ -18,6 +18,9 @@ venv/
 bin/
 dist/
 obj/
+
+# Kuberniq Chat — local auth data (users.json, initial password file)
+kuberniq-chat/data/
 **/hashnode-rag.md
 **/auth-oidc-article.md
 **/kuberniq.jpeg

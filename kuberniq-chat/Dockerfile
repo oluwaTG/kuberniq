@@ -8,6 +8,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app source
 COPY app.py .
+COPY auth.py .
+
+# Data directory — persists users.json and admin-initial-password.txt
+# Mount a volume here in production:  -v kuberniq-chat-data:/data
+RUN mkdir -p /data
+ENV KUBERNIQ_DATA_DIR=/data
 
 # Streamlit config — disable telemetry, set server options
 ENV STREAMLIT_SERVER_PORT=8501 \
@@ -16,8 +22,11 @@ ENV STREAMLIT_SERVER_PORT=8501 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
 # Secrets injected at runtime via env — never baked into the image
-# OPENAI_API_KEY  — required
-# MCP_SERVER_URL  — required (e.g. http://mcp-server.mcp-server.svc.cluster.local:8080)
+# OPENAI_API_KEY   — required
+# MCP_SERVER_URL   — required (e.g. http://mcp-server.mcp-server.svc.cluster.local:8080)
+# MCP_USERNAME     — MCP server service-account username
+# MCP_PASSWORD     — MCP server service-account password
+# KUBERNIQ_DATA_DIR — path to auth data dir (default: /data)
 
 EXPOSE 8501
 

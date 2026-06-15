@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 from openai import OpenAI
 from dotenv import load_dotenv
 from dateutil import parser as dateutil_parser
+import auth as _auth
 
 load_dotenv()
+_auth.bootstrap_admin()   # no-op after first run
 
 # ── Config ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="MCP RAG Chatbot", page_icon="🤖", layout="wide")
@@ -66,6 +68,8 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []   # full conversation for LLM memory
 if "display_history" not in st.session_state:
     st.session_state.display_history = []  # (role, text, raw_data) for UI
+if "user" not in st.session_state:
+    st.session_state.user = None          # logged-in user record (dict) or None
 
 # ── MCP auth + helpers ────────────────────────────────────────────────────────
 _mcp_token: dict = {"access": None, "refresh": None}
@@ -447,19 +451,32 @@ def _log_qs(tail: int, since: str | None = None) -> str:
         return f"?sinceTime={quote(since)}"
     return f"?tail={tail}"
 
-def fetch_mcp_context(question: str, chat_history: list[dict] = None) -> tuple[dict, list[str]]:
+def fetch_mcp_context(
+    question: str,
+    chat_history: list[dict] = None,
+    user: dict | None = None,
+) -> tuple[dict, list[str]]:
     """
     Smart retrieval:
     1. Always fetch namespaces first so we can match namespace names in the question.
     2. LLM-powered entity extraction with chat history for follow-up resolution — regex as fallback.
-    3. Call only the endpoints relevant to the question intent.
-    4. Auto-troubleshoot mode: fan out across events, logs, deployment state.
+    3. RBAC: filter intents and namespaces based on the logged-in user's role.
+    4. Call only the endpoints relevant to the question intent.
+    5. Auto-troubleshoot mode: fan out across events, logs, deployment state.
     """
     ctx: dict = {}
     endpoints_used: list[str] = []
 
+    # ── RBAC: resolve effective user role ─────────────────────────────────────
+    # user=None means unauthenticated (shouldn't reach here in production,
+    # but we default to viewer-level access as a safe fallback).
+    effective_user = user or {"role": "viewer", "allowed_namespaces": []}
+    user_role      = effective_user.get("role", "viewer")
+
     # Step 1: always get namespaces & cluster info upfront
-    all_namespaces = get_all_namespaces()
+    all_namespaces_raw = get_all_namespaces()
+    # Apply namespace scoping — viewers only see their assigned namespaces
+    all_namespaces = _auth.filter_namespaces(all_namespaces_raw, effective_user)
     ctx["namespaces"] = all_namespaces
     endpoints_used.append("/namespaces")
 
@@ -467,11 +484,26 @@ def fetch_mcp_context(question: str, chat_history: list[dict] = None) -> tuple[d
     endpoints_used.append("/cluster/info")
 
     # Step 2: LLM entity extraction with conversation context (primary), regex fallback
-    intents = classify_intent(question)
+    raw_intents = classify_intent(question)
+    # ── RBAC: strip intents the user is not permitted to act on ───────────────
+    intents         = _auth.filter_intents(raw_intents, user_role)
+    blocked_intents = [i for i in raw_intents if i not in intents]
+    if blocked_intents:
+        ctx["permission_denied"] = "\n".join(
+            _auth.permission_denied_note(i, user_role) for i in blocked_intents
+        )
+
     ns, pod, service, container = extract_entities_llm(question, all_namespaces, chat_history)
     if ns is None and pod is None and service is None:
         # Regex fallback
         ns, pod, service, container = extract_entities(question, known_namespaces=all_namespaces)
+
+    # Guard: if the extracted namespace is outside the user's allowed set, drop it
+    if ns and ns not in all_namespaces:
+        ctx["namespace_denied"] = (
+            f"[PERMISSION_DENIED] You do not have access to namespace '{ns}'."
+        )
+        ns = None
 
     # Step 2b: time-range extraction (for log window queries)
     # Only call when logs are needed — saves one LLM round-trip otherwise.
@@ -1067,51 +1099,296 @@ def summarise_context(ctx: dict) -> str:
 
     return "\n\n".join(lines)
 
-# ── Dark theme ────────────────────────────────────────────────────────────────
+# ── Theme (matches dashboard design language exactly) ─────────────────────────
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-  :root {
-    --bg:#0f1117; --surface:#161b27; --surface2:#1e2535;
-    --border:#2a3147; --accent:#4f8ef7; --accent2:#38d9a9;
-    --warn:#f7a94f; --danger:#f76f6f; --text:#e2e8f5; --muted:#7b879e;
-  }
-  #MainMenu, footer { visibility: hidden; }
-  [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
-  .block-container { padding-top: 1.5rem !important; }
-  h1 { font-family: 'Inter', sans-serif !important; font-size: 1.35rem !important;
-       font-weight: 700 !important; color: var(--text) !important; letter-spacing: -.01em !important; }
-  .stChatMessage { background: var(--surface) !important; border: 1px solid var(--border) !important;
-    border-radius: 12px !important; }
-  [data-testid="stChatInput"] textarea {
-    background: var(--surface) !important; border: 1px solid var(--border) !important;
-    border-radius: 10px !important; color: var(--text) !important; font-family: 'Inter', sans-serif !important; }
-  [data-testid="stChatInput"] textarea:focus { border-color: var(--accent) !important;
-    box-shadow: 0 0 0 3px #4f8ef720 !important; }
-  [data-testid="stExpander"] { background: var(--surface) !important;
-    border: 1px solid var(--border) !important; border-radius: 10px !important; }
-  [data-testid="stExpander"] summary { color: var(--muted) !important; font-size: .82rem !important; }
-  .stMarkdown p, .stMarkdown li { font-family: 'Inter', sans-serif !important;
-    font-size: .88rem !important; color: var(--text) !important; line-height: 1.65 !important; }
-  .stMarkdown code { background: var(--surface2) !important; color: var(--accent2) !important;
-    border-radius: 4px !important; padding: .1rem .3rem !important; font-size: .82rem !important; }
-  .stMarkdown pre { background: var(--surface2) !important; border: 1px solid var(--border) !important;
-    border-radius: 8px !important; font-size: .8rem !important; }
-  .stMarkdown th { background: var(--surface2) !important; color: var(--muted) !important;
-    text-transform: uppercase !important; font-size: .7rem !important; letter-spacing: .06em !important; }
-  .stMarkdown td { border-top: 1px solid var(--border) !important; font-size: .82rem !important; }
-  button[kind="secondary"] { background: var(--surface2) !important;
-    border: 1px solid var(--border) !important; color: var(--muted) !important;
-    border-radius: 6px !important; font-size: .8rem !important; }
-  button[kind="secondary"]:hover { border-color: var(--danger) !important; color: var(--danger) !important; }
-  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg); }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg:#0f1117; --surface:#161b27; --surface2:#1e2535;
+  --border:#2a3147; --accent:#4f8ef7; --accent2:#38d9a9;
+  --warn:#f7a94f; --danger:#f76f6f; --text:#e2e8f5; --muted:#7b879e;
+}
+
+/* ── Nuke all Streamlit chrome ── */
+#MainMenu,footer,header,[data-testid="stToolbar"],
+[data-testid="stDecoration"],[data-testid="stStatusWidget"],
+.viewerBadge_container__r5tak,[data-testid="manage-app-button"]
+{ display:none !important; visibility:hidden !important; }
+
+/* ── Base ── */
+html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"],.main,.stApp
+{ background:var(--bg) !important; font-family:'Inter',sans-serif; }
+.block-container
+{ padding-top:1.25rem !important; padding-bottom:2rem !important; max-width:860px !important; }
+
+/* ── Sidebar ── */
+section[data-testid="stSidebar"]
+{ background:var(--surface) !important; border-right:1px solid var(--border) !important; }
+[data-testid="stSidebarContent"]
+{ background:var(--surface) !important; padding:.5rem 0 !important; }
+section[data-testid="stSidebar"] hr { border-color:var(--border) !important; margin:.4rem 0 !important; }
+section[data-testid="stSidebar"] h3
+{ font-size:.88rem !important; font-weight:600 !important; color:var(--text) !important; margin:.25rem 0 !important; }
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] .stMarkdown p
+{ font-size:.8rem !important; color:var(--muted) !important; line-height:1.5 !important; }
+section[data-testid="stSidebar"] ::-webkit-scrollbar { width:3px; }
+section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+
+/* ── Typography ── */
+h1 { font-size:1.15rem !important; font-weight:700 !important; color:var(--text) !important; letter-spacing:-.01em !important; margin:0 !important; }
+h2,h3,h4 { color:var(--text) !important; }
+.stMarkdown p,.stMarkdown li { font-size:.875rem !important; color:var(--text) !important; line-height:1.65 !important; }
+.stMarkdown strong { color:var(--text) !important; }
+.stMarkdown code { background:var(--surface2) !important; color:var(--accent2) !important; border-radius:4px !important; padding:.1rem .35rem !important; font-size:.8rem !important; }
+.stMarkdown pre { background:var(--surface2) !important; border:1px solid var(--border) !important; border-radius:8px !important; font-size:.79rem !important; padding:1rem !important; }
+.stMarkdown th { background:var(--surface2) !important; color:var(--muted) !important; text-transform:uppercase !important; font-size:.7rem !important; letter-spacing:.06em !important; padding:.5rem 1rem !important; }
+.stMarkdown td { border-top:1px solid var(--border) !important; font-size:.82rem !important; padding:.5rem 1rem !important; }
+.stMarkdown tr:hover td { background:#ffffff06 !important; }
+[data-testid="stCaptionContainer"] p { font-size:.78rem !important; color:var(--muted) !important; }
+
+/* ── Inputs (text / password / textarea) ── */
+.stTextInput>div>div>input,
+.stTextArea>div>div>textarea {
+  background:var(--surface2) !important; border:1px solid var(--border) !important;
+  border-radius:8px !important; color:var(--text) !important;
+  font-family:'Inter',sans-serif !important; font-size:.875rem !important;
+  padding:.5rem .75rem !important; transition:border-color .15s,box-shadow .15s !important;
+}
+.stTextInput>div>div>input:focus,
+.stTextArea>div>div>textarea:focus {
+  border-color:var(--accent) !important; box-shadow:0 0 0 3px #4f8ef720 !important; outline:none !important;
+}
+.stTextInput>div>div>input::placeholder,.stTextArea>div>div>textarea::placeholder
+{ color:var(--muted) !important; opacity:.7 !important; }
+.stTextInput label,.stSelectbox label,.stMultiSelect label,.stTextArea label
+{ color:var(--muted) !important; font-size:.72rem !important; text-transform:uppercase !important; letter-spacing:.07em !important; font-weight:600 !important; margin-bottom:.25rem !important; }
+
+/* ── Select / multiselect ── */
+[data-baseweb="select"] { background:var(--surface2) !important; border:1px solid var(--border) !important; border-radius:8px !important; }
+[data-baseweb="select"] *,[data-baseweb="popover"] * { background:var(--surface2) !important; color:var(--text) !important; }
+[data-baseweb="option"]:hover { background:var(--surface) !important; }
+
+/* ── Buttons ── */
+.stButton>button {
+  background:var(--surface2) !important; border:1px solid var(--border) !important;
+  border-radius:8px !important; color:var(--muted) !important;
+  font-family:'Inter',sans-serif !important; font-size:.82rem !important;
+  font-weight:500 !important; padding:.45rem .9rem !important; transition:all .15s !important;
+}
+.stButton>button:hover { border-color:var(--accent) !important; color:var(--accent) !important; background:#4f8ef710 !important; }
+.stButton>button[kind="primary"] { background:var(--danger) !important; border-color:var(--danger) !important; color:#fff !important; }
+.stButton>button[kind="primary"]:hover { background:#d95f5f !important; border-color:#d95f5f !important; }
+/* Form submit */
+[data-testid="stFormSubmitButton"]>button
+{ background:var(--accent) !important; border-color:var(--accent) !important; color:#fff !important; font-weight:600 !important; }
+[data-testid="stFormSubmitButton"]>button:hover
+{ background:#3d7ce0 !important; border-color:#3d7ce0 !important; }
+
+/* ── Chat messages ── */
+.stChatMessage { background:var(--surface) !important; border:1px solid var(--border) !important; border-radius:12px !important; margin-bottom:.5rem !important; }
+[data-testid="stChatMessageContent"] p { color:var(--text) !important; }
+
+/* ── Chat input ── */
+[data-testid="stChatInput"] { background:var(--surface) !important; border-top:1px solid var(--border) !important; }
+[data-testid="stChatInput"] textarea { background:var(--surface) !important; border:1px solid var(--border) !important; border-radius:12px !important; color:var(--text) !important; font-family:'Inter',sans-serif !important; font-size:.875rem !important; }
+[data-testid="stChatInput"] textarea:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #4f8ef720 !important; }
+[data-testid="stChatInput"] textarea::placeholder { color:var(--muted) !important; }
+
+/* ── Expanders ── */
+[data-testid="stExpander"] { background:var(--surface2) !important; border:1px solid var(--border) !important; border-radius:8px !important; margin-bottom:.4rem !important; }
+[data-testid="stExpander"] summary { color:var(--muted) !important; font-size:.82rem !important; font-family:'Inter',sans-serif !important; }
+[data-testid="stExpander"] summary:hover { color:var(--text) !important; }
+[data-testid="stExpander"]>div>div { background:var(--surface2) !important; }
+
+/* ── Alerts ── */
+[data-testid="stAlert"] { border-radius:8px !important; font-size:.84rem !important; }
+
+/* ── Divider ── */
+hr { border-color:var(--border) !important; }
+
+/* ── Scrollbars (global) ── */
+::-webkit-scrollbar { width:5px; height:5px; }
+::-webkit-scrollbar-track { background:var(--bg); }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+
+/* ── Login card ── */
+.login-wrap { display:flex; justify-content:center; padding-top:5vh; }
+.login-card {
+  background:var(--surface); border:1px solid var(--border); border-radius:14px;
+  padding:2.5rem 2.25rem 2rem; width:100%; box-sizing:border-box;
+  box-shadow:0 8px 40px #00000055;
+}
+.login-logo { text-align:center; margin-bottom:2rem; }
+.login-icon-box {
+  width:54px; height:54px;
+  background:linear-gradient(135deg,var(--accent) 0%,var(--accent2) 100%);
+  border-radius:14px; margin:0 auto .9rem; display:flex; align-items:center;
+  justify-content:center; font-size:1.5rem; box-shadow:0 4px 20px #4f8ef730;
+}
+.login-title {
+  font-family:'Inter',sans-serif; font-size:1.2rem; font-weight:700;
+  color:var(--text); margin:0 0 .3rem; letter-spacing:-.01em;
+}
+.login-sub { font-family:'Inter',sans-serif; font-size:.8rem; color:var(--muted); margin:0; }
 </style>
 """, unsafe_allow_html=True)
 
 # ── UI ────────────────────────────────────────────────────────────────────────
+
+# ── Login page (shown when not authenticated) ─────────────────────────────────
+def show_login_page() -> None:
+    """Render a styled login card and call st.stop() so nothing else renders."""
+    # Centre column layout
+    _, col, _ = st.columns([1, 1.4, 1])
+    with col:
+        st.markdown("""
+        <div class="login-logo">
+          <div class="login-icon-box">⎈</div>
+          <p class="login-title">Kuberniq Chat</p>
+          <p class="login-sub">Kubernetes AI assistant — sign in to continue</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.form("login_form", clear_on_submit=False):
+            username  = st.text_input("Username", placeholder="admin")
+            password  = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in →", use_container_width=True)
+
+        if submitted:
+            if not username or not password:
+                st.error("Please enter both username and password.")
+            else:
+                ok, user_record = _auth.validate_credentials(username, password)
+                if ok:
+                    st.session_state.user            = user_record
+                    st.session_state.chat_history    = []
+                    st.session_state.display_history = []
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+
+    st.stop()
+
+
+# ── Guard: require login ───────────────────────────────────────────────────────
+if not st.session_state.get("user"):
+    show_login_page()
+
+current_user: dict = st.session_state.user   # guaranteed non-None from here on
+user_role: str     = current_user.get("role", "viewer")
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown(f"### 👤 {current_user['username']}")
+    role_colors = {"admin": "var(--warn)", "operator": "var(--accent2)", "viewer": "var(--muted)"}
+    badge_col = role_colors.get(user_role, "var(--muted)")
+    st.markdown(
+        f'<span style="background:{badge_col}22;color:{badge_col};padding:.2rem .6rem;'
+        f'border-radius:999px;font-size:.72rem;font-weight:700;letter-spacing:.06em;'
+        f'text-transform:uppercase;border:1px solid {badge_col}44">{user_role}</span>',
+        unsafe_allow_html=True,
+    )
+    st.caption(_auth.ROLE_DESCRIPTIONS.get(user_role, ""))
+
+    if current_user.get("allowed_namespaces"):
+        st.markdown("**Namespaces:**")
+        for ns in current_user["allowed_namespaces"]:
+            st.markdown(f"  • `{ns}`")
+
+    st.markdown("---")
+
+    # ── Change password ────────────────────────────────────────────────────────
+    with st.expander("🔑 Change password"):
+        with st.form("change_pw_form"):
+            cur_pw  = st.text_input("Current password", type="password")
+            new_pw  = st.text_input("New password",     type="password")
+            new_pw2 = st.text_input("Confirm new password", type="password")
+            if st.form_submit_button("Update password"):
+                if new_pw != new_pw2:
+                    st.error("New passwords do not match.")
+                else:
+                    ok, err = _auth.change_password(current_user, cur_pw, new_pw)
+                    if ok:
+                        st.success("Password updated.")
+                    else:
+                        st.error(err)
+
+    # ── User management (admin only) ───────────────────────────────────────────
+    if user_role == "admin":
+        with st.expander("👥 User management"):
+            st.markdown("**Users**")
+            _, users_list = _auth.list_users(current_user)
+            for u in users_list:
+                ns_info = (
+                    ", ".join(u["allowed_namespaces"]) if u["allowed_namespaces"] else "all"
+                )
+                st.markdown(
+                    f"- **{u['username']}** · `{u['role']}` · namespaces: *{ns_info}*"
+                )
+
+            st.markdown("---")
+            st.markdown("**Create user**")
+            all_ns_for_mgmt = get_all_namespaces()
+            with st.form("create_user_form"):
+                new_uname = st.text_input("Username")
+                new_upw   = st.text_input("Password", type="password")
+                new_urole = st.selectbox("Role", ["viewer", "operator", "admin"])
+                new_uns   = st.multiselect(
+                    "Allowed namespaces (viewer; leave empty = all)",
+                    options=all_ns_for_mgmt,
+                )
+                if st.form_submit_button("Create"):
+                    ok, err = _auth.create_user(
+                        current_user, new_uname, new_upw, new_urole, new_uns or []
+                    )
+                    if ok:
+                        st.success(f"User '{new_uname}' created.")
+                        st.rerun()
+                    else:
+                        st.error(err)
+
+            st.markdown("---")
+            st.markdown("**Delete user**")
+            with st.form("delete_user_form"):
+                del_uname = st.text_input("Username to delete")
+                if st.form_submit_button("Delete", type="primary"):
+                    ok, err = _auth.delete_user(current_user, del_uname)
+                    if ok:
+                        st.success(f"User '{del_uname}' deleted.")
+                        st.rerun()
+                    else:
+                        st.error(err)
+
+            st.markdown("---")
+            st.markdown("**Assign namespaces (viewer)**")
+            with st.form("assign_ns_form"):
+                target_uname = st.text_input("Username")
+                target_ns    = st.multiselect(
+                    "Allowed namespaces (empty = all)",
+                    options=all_ns_for_mgmt,
+                )
+                if st.form_submit_button("Save"):
+                    ok, err = _auth.update_user_namespaces(
+                        current_user, target_uname, target_ns
+                    )
+                    if ok:
+                        st.success("Namespaces updated.")
+                    else:
+                        st.error(err)
+
+    st.markdown("---")
+    if st.button("🚪 Sign out", use_container_width=True):
+        st.session_state.user            = None
+        st.session_state.chat_history    = []
+        st.session_state.display_history = []
+        st.rerun()
+
+# ── Main area ─────────────────────────────────────────────────────────────────
 st.title("Kuberniq Chat")
-st.caption(f"AI-powered Kubernetes assistant · model: `{openai_model}`")
+st.caption(f"AI-powered Kubernetes assistant · model: `{openai_model}` · signed in as **{current_user['username']}** (`{user_role}`)")
 
 col1, col2 = st.columns([4, 1])
 with col2:
@@ -1122,7 +1399,7 @@ with col2:
 
 st.markdown("---")
 
-# ── YAML upload (improvement 4) ───────────────────────────────────────────────
+# ── YAML upload ───────────────────────────────────────────────────────────────
 with st.expander("📄 Upload a YAML manifest for validation / explanation"):
     uploaded = st.file_uploader("Upload a Kubernetes YAML", type=["yaml", "yml"])
     if uploaded:
@@ -1152,7 +1429,7 @@ with st.expander("📄 Upload a YAML manifest for validation / explanation"):
 
 st.markdown("---")
 
-# ── Chat display (improvement 3) ──────────────────────────────────────────────
+# ── Chat display ──────────────────────────────────────────────────────────────
 for role, text, raw in st.session_state.display_history:
     with st.chat_message(role):
         st.markdown(text)
@@ -1172,13 +1449,26 @@ if user_input and user_input.strip():
         ctx, endpoints_used = fetch_mcp_context(
             user_input,
             chat_history=st.session_state.chat_history[:-1],  # exclude the just-appended question
+            user=st.session_state.get("user"),
         )
 
     context_str = summarise_context(ctx)
 
-    # Build prompt with summarised context (improvement 2)
+    # Inject user role context so the LLM knows what it can and can't surface
+    role_context = (
+        f"[USER_CONTEXT]\n"
+        f"Signed-in user: {current_user['username']} | Role: {user_role}\n"
+        f"Allowed namespaces: "
+        + (", ".join(current_user.get("allowed_namespaces") or ["all"]))
+        + "\n"
+        + _auth.ROLE_DESCRIPTIONS.get(user_role, "")
+        + "\n\nIf [PERMISSION_DENIED] blocks appear in the data, explain to the user that "
+          "their role does not allow that data — do not attempt to answer from denied sections."
+    )
+
     rag_user_msg = (
         f"Question: {user_input}\n\n"
+        f"{role_context}\n\n"
         f"Live Kubernetes cluster data (from endpoints: {', '.join(endpoints_used)}):\n\n"
         f"{context_str}\n\n"
         f"Answer using only the data above."

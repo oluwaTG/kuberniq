@@ -41,7 +41,6 @@ spec:
               value: {{ .Values.openaiModel | quote }}
             - name: DEBUG_MCP
               value: {{ .Values.debugMcp | quote }}
-            {{- if .Values.mcpAuth.secretName }}
             - name: MCP_USERNAME
               valueFrom:
                 secretKeyRef:

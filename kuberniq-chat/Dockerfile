@@ -12,7 +12,7 @@ COPY auth.py .
 
 # Data directory — persists users.json and admin-initial-password.txt
 # Mount a volume here in production:  -v kuberniq-chat-data:/data
-RUN mkdir -p /data
+RUN mkdir -p /data && chown 1000:1000 /data
 ENV KUBERNIQ_DATA_DIR=/data
 
 # Streamlit config — disable telemetry, set server options

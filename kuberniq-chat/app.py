@@ -36,6 +36,8 @@ STRICT RULES:
 5. Format answers with bullet points or tables. Keep responses concise.
 
 DATA SECTIONS YOU MAY RECEIVE:
+- [REGISTERED_CLUSTERS]: list of all clusters the MCP server knows about — always present. Use this to answer "how many clusters", "which clusters", "what clusters do you have access to". The local/in-cluster cluster plus any remote registered clusters are listed here.
+- [TARGET_CLUSTER]: set when the user asked about a specific remote cluster — all data in this response comes from that cluster.
 - [PODS] / [PODS_BY_NAMESPACE]: markdown table — name, phase, ready, restarts, node
 - [LOGS_<pod>]: raw container stdout/stderr — always display in a fenced code block and analyse for errors/exceptions/stack traces
 - [LOG_TIME_WINDOW]: present when the user requested a time-bounded log query. Contains "since", "until", and a "note". You MUST filter the log lines in [LOGS_*] to only those with timestamps inside the [since, until] window. Lines without timestamps that fall outside the window should be excluded. Explicitly state the time range you analysed.
@@ -135,6 +137,7 @@ def extract_entities_llm(
     question: str,
     known_namespaces: list[str],
     chat_history: list[dict] = None,
+    known_clusters: list[str] = None,
 ) -> tuple:
     """
     Use a fast LLM call to extract Kubernetes entities from natural language.
@@ -142,7 +145,8 @@ def extract_entities_llm(
     "get logs for that pod" or "same namespace as before" resolve correctly.
     Falls back to (None, None, None, None) on any error.
     """
-    ns_hint = ", ".join(known_namespaces[:40]) if known_namespaces else "none available"
+    ns_hint     = ", ".join(known_namespaces[:40]) if known_namespaces else "none available"
+    cluster_hint = ", ".join(known_clusters) if known_clusters else "none registered"
 
     # Build a short conversation snippet so the model has prior context
     history_snippet = ""
@@ -166,13 +170,15 @@ def extract_entities_llm(
 
     prompt = (
         f"Extract Kubernetes entities from the latest user question. "
-        f"Known namespaces in the cluster: [{ns_hint}].{history_snippet}\n\n"
+        f"Known namespaces in the cluster: [{ns_hint}]. "
+        f"Known registered remote clusters: [{cluster_hint}].{history_snippet}\n\n"
         f"Latest question: {question}\n\n"
         f"Reply with JSON only — no explanation:\n"
         f'{{ "namespace": <string|null>, "pod": <string|null>, '
-        f'"service": <string|null>, "container": <string|null> }}\n\n'
+        f'"service": <string|null>, "container": <string|null>, "cluster": <string|null> }}\n\n'
         f"Rules:\n"
         f"- namespace must exactly match one of the known namespaces (case-insensitive), or null\n"
+        f"- cluster must exactly match one of the known registered clusters (case-insensitive), or null\n"
         f"- service is the app/deployment name (e.g. 'argocd-server', 'api', 'devops-helper')\n"
         f"- pod is only set if a full pod name with hash suffix is mentioned or referenced\n"
         f"- container is only set if explicitly named\n"
@@ -192,13 +198,18 @@ def extract_entities_llm(
         pod = d.get("pod")        or None
         svc = d.get("service")    or None
         con = d.get("container")  or None
+        clu = d.get("cluster")    or None
         # Validate namespace is actually in the cluster (case-insensitive)
         if ns and known_namespaces:
             ns_lower_map = {n.lower(): n for n in known_namespaces}
             ns = ns_lower_map.get(ns.lower())  # normalise to actual casing
-        return ns, pod, svc, con
+        # Validate cluster is actually registered (case-insensitive)
+        if clu and known_clusters:
+            clu_lower_map = {c.lower(): c for c in known_clusters}
+            clu = clu_lower_map.get(clu.lower())
+        return ns, pod, svc, con, clu
     except Exception:
-        return None, None, None, None
+        return None, None, None, None, None
 
 def extract_entities(question: str, known_namespaces: list[str] = None):
     """
@@ -369,6 +380,13 @@ def classify_intent(question: str) -> list[str]:
     q = question.lower()
     calls = ["cluster"]  # always fetch cluster info
 
+    # Registered clusters list (always fetched — needed for multi-cluster awareness)
+    calls.append("registered_clusters")
+
+    if any(w in q for w in ["how many cluster", "registered cluster", "which cluster",
+                             "list cluster", "available cluster", "what cluster"]):
+        calls.append("registered_clusters")   # already there — just ensures priority
+
     if any(w in q for w in ["metric", "cpu", "memory", "resource", "limit", "request", "usage"]):
         calls.append("node_metrics")
         calls.append("pod_metrics")
@@ -458,24 +476,32 @@ def fetch_mcp_context(
 ) -> tuple[dict, list[str]]:
     """
     Smart retrieval:
-    1. Always fetch namespaces first so we can match namespace names in the question.
-    2. LLM-powered entity extraction with chat history for follow-up resolution — regex as fallback.
+    1. Always fetch namespaces + registered clusters upfront for entity resolution.
+    2. LLM-powered entity extraction (namespace, pod, service, container, cluster).
     3. RBAC: filter intents and namespaces based on the logged-in user's role.
-    4. Call only the endpoints relevant to the question intent.
+    4. All MCP calls append ?cluster=<name> when a remote cluster is targeted.
     5. Auto-troubleshoot mode: fan out across events, logs, deployment state.
     """
     ctx: dict = {}
     endpoints_used: list[str] = []
 
     # ── RBAC: resolve effective user role ─────────────────────────────────────
-    # user=None means unauthenticated (shouldn't reach here in production,
-    # but we default to viewer-level access as a safe fallback).
     effective_user = user or {"role": "viewer", "allowed_namespaces": []}
     user_role      = effective_user.get("role", "viewer")
 
-    # Step 1: always get namespaces & cluster info upfront
+    # Step 1: always fetch registered clusters, namespaces & cluster info upfront
+    # GET /clusters → list of {name, isLocal} — needed for multi-cluster routing
+    registered_clusters_raw = mcp_get("/clusters")
+    registered_clusters: list[str] = []
+    if isinstance(registered_clusters_raw, list):
+        registered_clusters = [
+            c.get("name", "") for c in registered_clusters_raw
+            if isinstance(c, dict) and not c.get("isLocal", False) and c.get("name")
+        ]
+    ctx["registered_clusters"] = registered_clusters_raw
+    endpoints_used.append("/clusters")
+
     all_namespaces_raw = get_all_namespaces()
-    # Apply namespace scoping — viewers only see their assigned namespaces
     all_namespaces = _auth.filter_namespaces(all_namespaces_raw, effective_user)
     ctx["namespaces"] = all_namespaces
     endpoints_used.append("/namespaces")
@@ -483,9 +509,8 @@ def fetch_mcp_context(
     ctx["cluster_info"] = mcp_get("/cluster/info")
     endpoints_used.append("/cluster/info")
 
-    # Step 2: LLM entity extraction with conversation context (primary), regex fallback
+    # Step 2: LLM entity extraction (primary) — now includes cluster name
     raw_intents = classify_intent(question)
-    # ── RBAC: strip intents the user is not permitted to act on ───────────────
     intents         = _auth.filter_intents(raw_intents, user_role)
     blocked_intents = [i for i in raw_intents if i not in intents]
     if blocked_intents:
@@ -493,22 +518,45 @@ def fetch_mcp_context(
             _auth.permission_denied_note(i, user_role) for i in blocked_intents
         )
 
-    ns, pod, service, container = extract_entities_llm(question, all_namespaces, chat_history)
+    result = extract_entities_llm(
+        question, all_namespaces, chat_history,
+        known_clusters=registered_clusters,
+    )
+    # extract_entities_llm now returns 5-tuple (ns, pod, svc, container, cluster)
+    if len(result) == 5:
+        ns, pod, service, container, target_cluster = result
+    else:
+        ns, pod, service, container = result
+        target_cluster = None
+
     if ns is None and pod is None and service is None:
-        # Regex fallback
         ns, pod, service, container = extract_entities(question, known_namespaces=all_namespaces)
 
-    # Guard: if the extracted namespace is outside the user's allowed set, drop it
+    # Guard: namespace outside allowed set
     if ns and ns not in all_namespaces:
         ctx["namespace_denied"] = (
             f"[PERMISSION_DENIED] You do not have access to namespace '{ns}'."
         )
         ns = None
 
+    # ── Multi-cluster routing ──────────────────────────────────────────────────
+    # When a specific remote cluster is referenced, append ?cluster=<name> to
+    # every MCP call so the server routes to that cluster's API.
+    cluster_qs = f"?cluster={target_cluster}" if target_cluster else ""
+    if target_cluster:
+        ctx["target_cluster"] = target_cluster
+        # Refresh namespaces scoped to the target cluster
+        ns_for_cluster = mcp_get(f"/namespaces{cluster_qs}")
+        if isinstance(ns_for_cluster, list):
+            all_namespaces = _auth.filter_namespaces(ns_for_cluster, effective_user)
+            ctx["namespaces"] = all_namespaces
+            endpoints_used.append(f"/namespaces{cluster_qs}")
+        ctx["cluster_info"] = mcp_get(f"/cluster/info{cluster_qs}")
+        endpoints_used.append(f"/cluster/info{cluster_qs}")
+
     # Step 2b: time-range extraction (for log window queries)
-    # Only call when logs are needed — saves one LLM round-trip otherwise.
-    log_since: str | None = None   # ISO-8601 UTC "since" timestamp
-    log_until: str | None = None   # ISO-8601 UTC "until" timestamp (used only by the LLM filter)
+    log_since: str | None = None
+    log_until: str | None = None
     if "logs" in intents:
         log_since, log_until = extract_time_range_llm(question, chat_history)
 
@@ -516,31 +564,33 @@ def fetch_mcp_context(
 
     # Step 3: node metrics (no namespace needed)
     if "node_metrics" in intents:
-        ctx["node_metrics"] = mcp_get("/metrics/nodes")
+        ctx["node_metrics"] = mcp_get(f"/metrics/nodes{cluster_qs}")
         endpoints_used.append("/metrics/nodes")
 
     # Step 4: pod metrics
     if "pod_metrics" in intents:
-        ctx["pod_metrics"] = mcp_get("/metrics/pods")
+        ctx["pod_metrics"] = mcp_get(f"/metrics/pods{cluster_qs}")
         endpoints_used.append("/metrics/pods")
 
     # Step 5: nodes
     if "nodes" in intents:
-        ctx["nodes"] = mcp_get("/nodes")
+        ctx["nodes"] = mcp_get(f"/nodes{cluster_qs}")
         endpoints_used.append("/nodes")
-        if service:  # "service" slot reused for node name when user says "node <name>"
-            ctx["node_detail"] = mcp_get(f"/nodes/{service}")
+        if service:
+            ctx["node_detail"] = mcp_get(f"/nodes/{service}{cluster_qs}")
             endpoints_used.append(f"/nodes/{service}")
 
     # Step 6: pod listing
     if needs_pods:
         if ns:
-            ctx["pods"] = mcp_get(f"/namespaces/{ns}/pods")
+            ctx["pods"] = mcp_get(f"/namespaces/{ns}/pods{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/pods")
         else:
             all_pods = {}
             for n in all_namespaces:
-                result = mcp_get(f"/namespaces/{n}/pods")
+                sep = "&" if cluster_qs else "?"
+                qs_sep = cluster_qs + sep if cluster_qs else "?"
+                result = mcp_get(f"/namespaces/{n}/pods{cluster_qs}")
                 if isinstance(result, list) and result:
                     all_pods[n] = result
             if all_pods:
@@ -621,10 +671,11 @@ def fetch_mcp_context(
         if ns and pod:
             # Exact pod known
             qs = _log_qs(150, log_since)
+            cqs = f"&cluster={target_cluster}" if target_cluster else ""
             log_path = (
-                f"/namespaces/{ns}/pods/{pod}/containers/{container}/logs{qs}"
+                f"/namespaces/{ns}/pods/{pod}/containers/{container}/logs{qs}{cqs}"
                 if container
-                else f"/namespaces/{ns}/pods/{pod}/logs{qs}"
+                else f"/namespaces/{ns}/pods/{pod}/logs{qs}{cqs}"
             )
             ctx[f"logs_{pod}"] = mcp_get(log_path, text=True)
             endpoints_used.append(log_path.split("?")[0])
@@ -633,7 +684,7 @@ def fetch_mcp_context(
             # Service/app name known, namespace known — find matching pods
             pods_data = ctx.get("pods", [])
             if not isinstance(pods_data, list) or not pods_data:
-                pods_data = mcp_get(f"/namespaces/{ns}/pods")
+                pods_data = mcp_get(f"/namespaces/{ns}/pods{cluster_qs}")
                 ctx["pods"] = pods_data
                 endpoints_used.append(f"/namespaces/{ns}/pods")
             matching = [
@@ -644,10 +695,11 @@ def fetch_mcp_context(
                 pname = p.get("name", "")
                 if pname:
                     qs = _log_qs(150, log_since)
+                    cqs = f"&cluster={target_cluster}" if target_cluster else ""
                     log_path = (
-                        f"/namespaces/{ns}/pods/{pname}/containers/{container}/logs{qs}"
+                        f"/namespaces/{ns}/pods/{pname}/containers/{container}/logs{qs}{cqs}"
                         if container
-                        else f"/namespaces/{ns}/pods/{pname}/logs{qs}"
+                        else f"/namespaces/{ns}/pods/{pname}/logs{qs}{cqs}"
                     )
                     ctx[f"logs_{pname}"] = mcp_get(log_path, text=True)
                     endpoints_used.append(log_path.split("?")[0])
@@ -672,10 +724,11 @@ def fetch_mcp_context(
                     pname = p.get("name", "")
                     if pname:
                         qs = _log_qs(150, log_since)
+                        cqs = f"&cluster={target_cluster}" if target_cluster else ""
                         log_path = (
-                            f"/namespaces/{ns_name}/pods/{pname}/containers/{container}/logs{qs}"
+                            f"/namespaces/{ns_name}/pods/{pname}/containers/{container}/logs{qs}{cqs}"
                             if container
-                            else f"/namespaces/{ns_name}/pods/{pname}/logs{qs}"
+                            else f"/namespaces/{ns_name}/pods/{pname}/logs{qs}{cqs}"
                         )
                         ctx[f"logs_{pname}"] = mcp_get(log_path, text=True)
                         endpoints_used.append(log_path.split("?")[0])
@@ -692,11 +745,10 @@ def fetch_mcp_context(
             # Namespace known but no specific pod/service — fetch logs for first few pods
             pods_data = ctx.get("pods", [])
             if not isinstance(pods_data, list) or not pods_data:
-                pods_data = mcp_get(f"/namespaces/{ns}/pods")
+                pods_data = mcp_get(f"/namespaces/{ns}/pods{cluster_qs}")
                 ctx["pods"] = pods_data
                 endpoints_used.append(f"/namespaces/{ns}/pods")
             if isinstance(pods_data, list) and pods_data:
-                # Prioritise non-Running pods, then take up to 2 total
                 prioritised = sorted(
                     [p for p in pods_data if isinstance(p, dict)],
                     key=lambda p: 0 if p.get("phase") not in ("Running", "Succeeded") else 1
@@ -705,7 +757,8 @@ def fetch_mcp_context(
                     pname = p.get("name", "")
                     if pname:
                         qs = _log_qs(100, log_since)
-                        log_path = f"/namespaces/{ns}/pods/{pname}/logs{qs}"
+                        cqs = f"&cluster={target_cluster}" if target_cluster else ""
+                        log_path = f"/namespaces/{ns}/pods/{pname}/logs{qs}{cqs}"
                         ctx[f"logs_{pname}"] = mcp_get(log_path, text=True)
                         endpoints_used.append(log_path.split("?")[0])
             else:
@@ -721,35 +774,29 @@ def fetch_mcp_context(
     # Step 8: events — pod-level or namespace-level
     if "events" in intents:
         if ns and pod:
-            ctx["events"] = mcp_get(f"/namespaces/{ns}/pods/{pod}/events")
+            ctx["events"] = mcp_get(f"/namespaces/{ns}/pods/{pod}/events{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/pods/{pod}/events")
         elif ns:
-            ctx["namespace_events"] = mcp_get(f"/namespaces/{ns}/events")
+            ctx["namespace_events"] = mcp_get(f"/namespaces/{ns}/events{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/events")
 
     # ── AUTO-TROUBLESHOOT ─────────────────────────────────────────────────────
-    # When troubleshoot intent is detected, fan out to gather all diagnostic signals.
     if "troubleshoot" in intents:
         svc_name = service or pod
         if ns and svc_name:
-            # 1. Dedicated troubleshoot endpoint
-            ctx["troubleshoot"] = mcp_get(f"/troubleshoot/service/{ns}/{svc_name}")
+            ctx["troubleshoot"] = mcp_get(f"/troubleshoot/service/{ns}/{svc_name}{cluster_qs}")
             endpoints_used.append(f"/troubleshoot/service/{ns}/{svc_name}")
 
-            # 2. Namespace-wide events (catches OOMKills, back-offs, scheduling failures)
-            ctx["namespace_events"] = mcp_get(f"/namespaces/{ns}/events")
+            ctx["namespace_events"] = mcp_get(f"/namespaces/{ns}/events{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/events")
 
-            # 3. Deployment state for the named service/app
-            ctx["deployment"] = mcp_get(f"/namespaces/{ns}/deployments/{svc_name}")
+            ctx["deployment"] = mcp_get(f"/namespaces/{ns}/deployments/{svc_name}{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/deployments/{svc_name}")
 
-            # 4. Pod list so we can find crashed/pending pods
             if "pods" not in ctx:
-                ctx["pods"] = mcp_get(f"/namespaces/{ns}/pods")
+                ctx["pods"] = mcp_get(f"/namespaces/{ns}/pods{cluster_qs}")
                 endpoints_used.append(f"/namespaces/{ns}/pods")
 
-            # 5. Fetch logs for any pod that isn't Running/Succeeded
             pods_data = ctx.get("pods", [])
             if isinstance(pods_data, list):
                 unhealthy_pods = [
@@ -758,54 +805,50 @@ def fetch_mcp_context(
                     and p.get("phase") not in ("Running", "Succeeded")
                     and svc_name.lower() in p.get("name", "").lower()
                 ]
-                # Also grab logs from the first matching running pod if no unhealthy ones
                 if not unhealthy_pods:
                     unhealthy_pods = [
                         p for p in pods_data
                         if isinstance(p, dict) and svc_name.lower() in p.get("name", "").lower()
                     ][:1]
-                for p in unhealthy_pods[:3]:  # cap at 3 pods to avoid context explosion
+                for p in unhealthy_pods[:3]:
                     pname = p.get("name", "")
+                    cqs = f"&cluster={target_cluster}" if target_cluster else ""
                     ctx[f"logs_{pname}"] = mcp_get(
-                        f"/namespaces/{ns}/pods/{pname}/logs{_log_qs(80, log_since)}", text=True
+                        f"/namespaces/{ns}/pods/{pname}/logs{_log_qs(80, log_since)}{cqs}", text=True
                     )
                     endpoints_used.append(f"/namespaces/{ns}/pods/{pname}/logs")
 
-            # 6. HPA (are replicas being throttled or unable to scale?)
-            ctx["hpa"] = mcp_get(f"/namespaces/{ns}/hpa")
+            ctx["hpa"] = mcp_get(f"/namespaces/{ns}/hpa{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/hpa")
 
-            # 7. Resource quotas (could the namespace be out of quota?)
-            ctx["resourcequotas"] = mcp_get(f"/namespaces/{ns}/resourcequotas")
+            ctx["resourcequotas"] = mcp_get(f"/namespaces/{ns}/resourcequotas{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/resourcequotas")
 
             ctx["auto_troubleshoot_summary"] = (
-                f"Auto-troubleshoot for '{svc_name}' in namespace '{ns}'. "
-                "Data gathered: troubleshoot report, namespace events, deployment state, "
+                f"Auto-troubleshoot for '{svc_name}' in namespace '{ns}'"
+                + (f" on cluster '{target_cluster}'" if target_cluster else "")
+                + ". Data gathered: troubleshoot report, namespace events, deployment state, "
                 "pod logs (crashed/pending pods prioritised), HPA, resource quotas. "
                 "Synthesise all sections into a root-cause analysis."
             )
 
         elif ns and not svc_name:
-            # Namespace-level troubleshoot (e.g. "troubleshoot this pod" with no name,
-            # or "what's wrong in the dev namespace"): events + pods + logs for unhealthy pods
-            ctx["namespace_events"] = mcp_get(f"/namespaces/{ns}/events")
+            ctx["namespace_events"] = mcp_get(f"/namespaces/{ns}/events{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/events")
             if "pods" not in ctx:
-                ctx["pods"] = mcp_get(f"/namespaces/{ns}/pods")
+                ctx["pods"] = mcp_get(f"/namespaces/{ns}/pods{cluster_qs}")
                 endpoints_used.append(f"/namespaces/{ns}/pods")
-            ctx["resourcequotas"] = mcp_get(f"/namespaces/{ns}/resourcequotas")
+            ctx["resourcequotas"] = mcp_get(f"/namespaces/{ns}/resourcequotas{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/resourcequotas")
-            # If a specific pod was extracted (e.g. "troubleshoot pod my-app-xyz"), fetch its logs
             if pod:
+                cqs = f"&cluster={target_cluster}" if target_cluster else ""
                 ctx[f"logs_{pod}"] = mcp_get(
-                    f"/namespaces/{ns}/pods/{pod}/logs{_log_qs(100, log_since)}", text=True
+                    f"/namespaces/{ns}/pods/{pod}/logs{_log_qs(100, log_since)}{cqs}", text=True
                 )
                 endpoints_used.append(f"/namespaces/{ns}/pods/{pod}/logs")
-                ctx["events"] = mcp_get(f"/namespaces/{ns}/pods/{pod}/events")
+                ctx["events"] = mcp_get(f"/namespaces/{ns}/pods/{pod}/events{cluster_qs}")
                 endpoints_used.append(f"/namespaces/{ns}/pods/{pod}/events")
             else:
-                # No specific pod — grab logs for every unhealthy pod in the namespace
                 pods_data = ctx.get("pods", [])
                 if isinstance(pods_data, list):
                     unhealthy = [
@@ -816,8 +859,9 @@ def fetch_mcp_context(
                     for p in unhealthy[:3]:
                         pname = p.get("name", "")
                         if pname:
+                            cqs = f"&cluster={target_cluster}" if target_cluster else ""
                             ctx[f"logs_{pname}"] = mcp_get(
-                                f"/namespaces/{ns}/pods/{pname}/logs{_log_qs(80, log_since)}", text=True
+                                f"/namespaces/{ns}/pods/{pname}/logs{_log_qs(80, log_since)}{cqs}", text=True
                             )
                             endpoints_used.append(f"/namespaces/{ns}/pods/{pname}/logs")
         else:
@@ -828,15 +872,15 @@ def fetch_mcp_context(
     # Step 9: deployments
     if "deployments" in intents:
         if ns and service:
-            ctx["deployment"] = mcp_get(f"/namespaces/{ns}/deployments/{service}")
+            ctx["deployment"] = mcp_get(f"/namespaces/{ns}/deployments/{service}{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/deployments/{service}")
         elif ns:
-            ctx["deployments"] = mcp_get(f"/namespaces/{ns}/deployments")
+            ctx["deployments"] = mcp_get(f"/namespaces/{ns}/deployments{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/deployments")
         else:
             dep_all = {}
             for n in all_namespaces:
-                r = mcp_get(f"/namespaces/{n}/deployments")
+                r = mcp_get(f"/namespaces/{n}/deployments{cluster_qs}")
                 if isinstance(r, list) and r:
                     dep_all[n] = r
             if dep_all:
@@ -845,21 +889,21 @@ def fetch_mcp_context(
 
     # Step 10: replicasets
     if "replicasets" in intents and ns:
-        ctx["replicasets"] = mcp_get(f"/namespaces/{ns}/replicasets")
+        ctx["replicasets"] = mcp_get(f"/namespaces/{ns}/replicasets{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/replicasets")
 
     # Step 11: services
     if "services" in intents:
         if ns and service:
-            ctx["service"] = mcp_get(f"/namespaces/{ns}/services/{service}")
+            ctx["service"] = mcp_get(f"/namespaces/{ns}/services/{service}{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/services/{service}")
         elif ns:
-            ctx["services"] = mcp_get(f"/namespaces/{ns}/services")
+            ctx["services"] = mcp_get(f"/namespaces/{ns}/services{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/services")
         else:
             svc_all = {}
             for n in all_namespaces:
-                r = mcp_get(f"/namespaces/{n}/services")
+                r = mcp_get(f"/namespaces/{n}/services{cluster_qs}")
                 if isinstance(r, list) and r:
                     svc_all[n] = r
             if svc_all:
@@ -869,15 +913,15 @@ def fetch_mcp_context(
     # Step 12: ingresses
     if "ingresses" in intents:
         if ns and service:
-            ctx["ingress"] = mcp_get(f"/namespaces/{ns}/ingresses/{service}")
+            ctx["ingress"] = mcp_get(f"/namespaces/{ns}/ingresses/{service}{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/ingresses/{service}")
         elif ns:
-            ctx["ingresses"] = mcp_get(f"/namespaces/{ns}/ingresses")
+            ctx["ingresses"] = mcp_get(f"/namespaces/{ns}/ingresses{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/ingresses")
         else:
             ing_all = {}
             for n in all_namespaces:
-                r = mcp_get(f"/namespaces/{n}/ingresses")
+                r = mcp_get(f"/namespaces/{n}/ingresses{cluster_qs}")
                 if isinstance(r, list) and r:
                     ing_all[n] = r
             if ing_all:
@@ -886,94 +930,94 @@ def fetch_mcp_context(
 
     # Step 13: network policies
     if "networkpolicies" in intents and ns:
-        ctx["networkpolicies"] = mcp_get(f"/namespaces/{ns}/networkpolicies")
+        ctx["networkpolicies"] = mcp_get(f"/namespaces/{ns}/networkpolicies{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/networkpolicies")
 
     # Step 14: configmaps
     if "configmaps" in intents:
         if ns and service:
-            ctx["configmap"] = mcp_get(f"/namespaces/{ns}/configmaps/{service}")
+            ctx["configmap"] = mcp_get(f"/namespaces/{ns}/configmaps/{service}{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/configmaps/{service}")
         elif ns:
-            ctx["configmaps"] = mcp_get(f"/namespaces/{ns}/configmaps")
+            ctx["configmaps"] = mcp_get(f"/namespaces/{ns}/configmaps{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/configmaps")
 
     # Step 15: secrets (keys only)
     if "secrets" in intents and ns:
-        ctx["secrets"] = mcp_get(f"/namespaces/{ns}/secrets")
+        ctx["secrets"] = mcp_get(f"/namespaces/{ns}/secrets{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/secrets")
 
     # Step 16: RBAC
     if "rbac" in intents:
-        ctx["clusterroles"] = mcp_get("/clusterroles")
+        ctx["clusterroles"] = mcp_get(f"/clusterroles{cluster_qs}")
         endpoints_used.append("/clusterroles")
-        ctx["clusterrolebindings"] = mcp_get("/clusterrolebindings")
+        ctx["clusterrolebindings"] = mcp_get(f"/clusterrolebindings{cluster_qs}")
         endpoints_used.append("/clusterrolebindings")
         if ns:
-            ctx["roles"] = mcp_get(f"/namespaces/{ns}/roles")
+            ctx["roles"] = mcp_get(f"/namespaces/{ns}/roles{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/roles")
-            ctx["rolebindings"] = mcp_get(f"/namespaces/{ns}/rolebindings")
+            ctx["rolebindings"] = mcp_get(f"/namespaces/{ns}/rolebindings{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/rolebindings")
 
     # Step 17: service accounts
     if "serviceaccounts" in intents and ns:
-        ctx["serviceaccounts"] = mcp_get(f"/namespaces/{ns}/serviceaccounts")
+        ctx["serviceaccounts"] = mcp_get(f"/namespaces/{ns}/serviceaccounts{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/serviceaccounts")
 
     # Step 18: statefulsets
     if "statefulsets" in intents and ns:
-        ctx["statefulsets"] = mcp_get(f"/namespaces/{ns}/statefulsets")
+        ctx["statefulsets"] = mcp_get(f"/namespaces/{ns}/statefulsets{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/statefulsets")
 
     # Step 19: daemonsets
     if "daemonsets" in intents and ns:
-        ctx["daemonsets"] = mcp_get(f"/namespaces/{ns}/daemonsets")
+        ctx["daemonsets"] = mcp_get(f"/namespaces/{ns}/daemonsets{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/daemonsets")
 
     # Step 20: jobs
     if "jobs" in intents:
         if ns and service:
-            ctx["job"] = mcp_get(f"/namespaces/{ns}/jobs/{service}")
+            ctx["job"] = mcp_get(f"/namespaces/{ns}/jobs/{service}{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/jobs/{service}")
         elif ns:
-            ctx["jobs"] = mcp_get(f"/namespaces/{ns}/jobs")
+            ctx["jobs"] = mcp_get(f"/namespaces/{ns}/jobs{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/jobs")
 
     # Step 21: cronjobs
     if "cronjobs" in intents:
         if ns and service:
-            ctx["cronjob"] = mcp_get(f"/namespaces/{ns}/cronjobs/{service}")
+            ctx["cronjob"] = mcp_get(f"/namespaces/{ns}/cronjobs/{service}{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/cronjobs/{service}")
         elif ns:
-            ctx["cronjobs"] = mcp_get(f"/namespaces/{ns}/cronjobs")
+            ctx["cronjobs"] = mcp_get(f"/namespaces/{ns}/cronjobs{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/cronjobs")
 
     # Step 22: HPA
     if "hpa" in intents and ns:
-        ctx["hpa"] = mcp_get(f"/namespaces/{ns}/hpa")
+        ctx["hpa"] = mcp_get(f"/namespaces/{ns}/hpa{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/hpa")
 
     # Step 23: resource quotas
     if "resourcequotas" in intents and ns:
-        ctx["resourcequotas"] = mcp_get(f"/namespaces/{ns}/resourcequotas")
+        ctx["resourcequotas"] = mcp_get(f"/namespaces/{ns}/resourcequotas{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/resourcequotas")
 
     # Step 24: limit ranges
     if "limitranges" in intents and ns:
-        ctx["limitranges"] = mcp_get(f"/namespaces/{ns}/limitranges")
+        ctx["limitranges"] = mcp_get(f"/namespaces/{ns}/limitranges{cluster_qs}")
         endpoints_used.append(f"/namespaces/{ns}/limitranges")
 
     # Step 25: storage classes (cluster-scoped)
     if "storageclasses" in intents:
-        ctx["storageclasses"] = mcp_get("/storageclasses")
+        ctx["storageclasses"] = mcp_get(f"/storageclasses{cluster_qs}")
         endpoints_used.append("/storageclasses")
 
     # Step 26: PVCs and PVs
     if "volumes" in intents:
-        ctx["persistentvolumes"] = mcp_get("/persistentvolumes")
+        ctx["persistentvolumes"] = mcp_get(f"/persistentvolumes{cluster_qs}")
         endpoints_used.append("/persistentvolumes")
         if ns:
-            ctx["pvcs"] = mcp_get(f"/namespaces/{ns}/persistentvolumeclaims")
+            ctx["pvcs"] = mcp_get(f"/namespaces/{ns}/persistentvolumeclaims{cluster_qs}")
             endpoints_used.append(f"/namespaces/{ns}/persistentvolumeclaims")
 
     return ctx, endpoints_used

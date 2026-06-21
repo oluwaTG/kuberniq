@@ -8,6 +8,9 @@ Answers are grounded entirely in **live cluster data** fetched from the [Kuberni
 ## Features
 
 - **Chat authentication + RBAC** — login page with three roles (admin / operator / viewer); namespace scoping for viewers; admin user-management panel in the sidebar
+- **Persistent sessions** — login state is stored in a signed JWT browser cookie; sessions survive pod restarts and page refreshes without requiring re-login; the signing key is persisted on the mounted PV (`KUBERNIQ_DATA_DIR/jwt_secret.txt`)
+- **Container-aware pod queries** — every pod in the `[PODS]` context now includes a `CONTAINERS` column listing each container as `name(image)` (init containers marked `[init]`), so the LLM can answer questions like *"which pods have a Dapr sidecar?"* or *"what image version is each container running?"*
+- **Multi-cluster support** — query any registered remote cluster by name; the LLM extracts the target cluster from natural language and routes all MCP calls with `?cluster=<name>`
 - **Natural language queries** — ask about pods, logs, events, deployments, jobs, HPA, and more
 - **MCP server authentication** — logs in with username/password, sends Bearer tokens, and auto-refreshes on 401
 - **LLM entity extraction** — uses `gpt-4o-mini` to identify namespaces, pod names, app names, and containers from plain English, including follow-up references like "that pod" or "same namespace as before"
@@ -118,7 +121,8 @@ The **👥 User management** panel lets you create users, delete users, and assi
 ### User data storage
 
 User accounts are stored in `KUBERNIQ_DATA_DIR/users.json` (default: `./data/users.json`).  
-**In production, mount a persistent volume at `/data`** so accounts survive pod restarts.
+The JWT session-cookie signing key is stored in `KUBERNIQ_DATA_DIR/jwt_secret.txt` (auto-generated on first boot).  
+**In production, mount a persistent volume at `/data`** so accounts, passwords, and the signing key all survive pod restarts.
 
 ---
 
@@ -135,8 +139,8 @@ The chat app connects to kuberniq-server using a dedicated service account. This
 | `MCP_USERNAME` | ✅ | `admin` | MCP server username |
 | `MCP_PASSWORD` | ✅ | — | MCP server password |
 | `OPENAI_MODEL` | — | `gpt-4o` | OpenAI model used for answering |
-| `DEBUG_MCP` | — | `false` | Set `true` to show raw MCP context in the UI |
-| `KUBERNIQ_DATA_DIR` | — | `./data` | Path to chat auth data directory |
+| `DEBUG_MCP` | — | `false` | Set `true` to show raw MCP context in the UI (local dev only) |
+| `KUBERNIQ_DATA_DIR` | — | `./data` | Path to chat data directory — stores `users.json`, `admin-initial-password.txt`, and `jwt_secret.txt` |
 
 ### MCP server JWT flow
 
@@ -306,10 +310,12 @@ The chatbot never talks to the Kubernetes API directly. All cluster data flows t
 
 - [x] JWT authentication for kuberniq-server calls
 - [x] Chat app login with local auth + RBAC (admin / operator / viewer)
+- [x] Persistent sessions via signed JWT browser cookie (survives pod restarts)
 - [x] Time-bounded log queries
+- [x] Multi-cluster support (query any registered cluster by name)
+- [x] Container-aware pod queries (container names + images in every pod response)
 - [ ] OIDC / SSO login support
 - [ ] Persistent volume Helm template for user data
-- [ ] Multi-cluster support (switch clusters mid-session)
 - [ ] Streaming log tail (live follow mode)
 
 ---
@@ -529,6 +535,7 @@ The chatbot authenticates as a `viewer` — if the server credential is compromi
 ## Roadmap
 
 - [x] JWT authentication for kuberniq-server service-to-service calls
+- [x] Multi-cluster support (query any registered cluster by name)
+- [x] Container-aware pod queries (container names + images exposed to the LLM)
 - [ ] Conversation memory with summarisation for long sessions
-- [ ] Multi-cluster support (switch clusters mid-session)
 - [ ] Streaming log tail (live follow mode)

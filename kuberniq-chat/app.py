@@ -5,14 +5,18 @@ import os
 import json
 import re
 import yaml
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
 from dateutil import parser as dateutil_parser
 import auth as _auth
+import extra_streamlit_components as stx
 
 load_dotenv()
 _auth.bootstrap_admin()   # no-op after first run
+
+# Cookie manager (must be created once at module level, not inside a function)
+_cookie_manager = stx.CookieManager()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="MCP RAG Chatbot", page_icon="🤖", layout="wide")
@@ -38,7 +42,7 @@ STRICT RULES:
 DATA SECTIONS YOU MAY RECEIVE:
 - [REGISTERED_CLUSTERS]: list of all clusters the MCP server knows about — always present. Use this to answer "how many clusters", "which clusters", "what clusters do you have access to". The local/in-cluster cluster plus any remote registered clusters are listed here.
 - [TARGET_CLUSTER]: set when the user asked about a specific remote cluster — all data in this response comes from that cluster.
-- [PODS] / [PODS_BY_NAMESPACE]: markdown table — name, phase, ready, restarts, node
+- [PODS] / [PODS_BY_NAMESPACE]: markdown table — name, phase, ready, restarts, node, and a CONTAINERS column listing every container as `name(image)` (including init containers marked [init])
 - [LOGS_<pod>]: raw container stdout/stderr — always display in a fenced code block and analyse for errors/exceptions/stack traces
 - [LOG_TIME_WINDOW]: present when the user requested a time-bounded log query. Contains "since", "until", and a "note". You MUST filter the log lines in [LOGS_*] to only those with timestamps inside the [since, until] window. Lines without timestamps that fall outside the window should be excluded. Explicitly state the time range you analysed.
 - [NAMESPACE_EVENTS] / [EVENTS]: markdown table — type, reason, object, message; Warning rows mean something is wrong
@@ -63,6 +67,9 @@ When [AUTO_TROUBLESHOOT_SUMMARY] is present, synthesise ALL sections into:
 
 POD QUESTIONS:
 Always reference the [PODS] table explicitly. List pod names, phase, restarts.
+The CONTAINERS column shows every container in the pod as `name(image)` — use this to answer
+questions like "which pods have a dapr sidecar", "which pods run more than one container", or
+"which image version is each container using". Init containers are prefixed with [init].
 If logs are present under [LOGS_<pod>], display and analyse them even if not explicitly asked."""
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -71,7 +78,9 @@ if "chat_history" not in st.session_state:
 if "display_history" not in st.session_state:
     st.session_state.display_history = []  # (role, text, raw_data) for UI
 if "user" not in st.session_state:
-    st.session_state.user = None          # logged-in user record (dict) or None
+    # Try to restore from a signed browser cookie (survives pod restarts)
+    _tok = _cookie_manager.get(_auth.SESSION_COOKIE)
+    st.session_state.user = _auth.validate_session_token(_tok) if _tok else None
 
 # ── MCP auth + helpers ────────────────────────────────────────────────────────
 _mcp_token: dict = {"access": None, "refresh": None}
@@ -1022,23 +1031,41 @@ def fetch_mcp_context(
 
     return ctx, endpoints_used
 
+def _short_image(img: str) -> str:
+    """Strip registry prefix: daprio/daprd:1.11 → daprd:1.11, registry.io/ns/img:tag → img:tag"""
+    if not img:
+        return "?"
+    return img.rsplit("/", 1)[-1]   # keep everything after the last '/'
+
 def _fmt_pods(pods: list) -> str:
-    """Render a pod list as a compact markdown table."""
+    """Render a pod list as a compact markdown table with per-container names and images."""
     if not isinstance(pods, list) or not pods:
         return "(no pods)"
-    rows = ["| NAME | PHASE | READY | RESTARTS | NODE |",
-            "|------|-------|-------|----------|------|"]
+    rows = ["| NAME | PHASE | READY | RESTARTS | NODE | CONTAINERS |",
+            "|------|-------|-------|----------|------|-----------|"]
     for p in pods:
         if not isinstance(p, dict):
             continue
-        name  = p.get("name", "?")
-        phase = p.get("phase", "?")
-        conts = p.get("containers", [])
-        ready = (f"{sum(1 for c in conts if isinstance(c,dict) and c.get('ready',False))}"
-                 f"/{len(conts)}") if conts else "?"
-        restarts = sum(c.get("restartCount", 0) for c in conts if isinstance(c, dict))
-        node  = p.get("nodeName", p.get("node", "?"))
-        rows.append(f"| {name} | {phase} | {ready} | {restarts} | {node} |")
+        name     = p.get("name", "?")
+        phase    = p.get("phase", "?")
+        conts    = p.get("containers") or []
+        init_conts = p.get("initContainers") or []
+        ready    = (f"{sum(1 for c in conts if isinstance(c, dict) and c.get('ready', False))}"
+                    f"/{len(conts)}") if conts else p.get("ready", "?")
+        restarts = sum(c.get("restarts", c.get("restartCount", 0))
+                       for c in conts if isinstance(c, dict))
+        node     = p.get("nodeName", p.get("node", "?"))
+        # Build container summary: "name(short-image)" pairs
+        cont_parts = [
+            f"{c['name']}({_short_image(c.get('image', ''))})"
+            for c in conts if isinstance(c, dict) and c.get("name")
+        ]
+        init_parts = [
+            f"[init]{c['name']}({_short_image(c.get('image', ''))})"
+            for c in init_conts if isinstance(c, dict) and c.get("name")
+        ]
+        cont_summary = ", ".join(cont_parts + init_parts) or "?"
+        rows.append(f"| {name} | {phase} | {ready} | {restarts} | {node} | {cont_summary} |")
     return "\n".join(rows)
 
 
@@ -1310,6 +1337,11 @@ def show_login_page() -> None:
                     st.session_state.user            = user_record
                     st.session_state.chat_history    = []
                     st.session_state.display_history = []
+                    _cookie_manager.set(
+                        _auth.SESSION_COOKIE,
+                        _auth.issue_session_token(user_record),
+                        expires_at=datetime.now() + timedelta(days=_auth.TOKEN_DAYS),
+                    )
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -1428,6 +1460,7 @@ with st.sidebar:
         st.session_state.user            = None
         st.session_state.chat_history    = []
         st.session_state.display_history = []
+        _cookie_manager.delete(_auth.SESSION_COOKIE)
         st.rerun()
 
 # ── Main area ─────────────────────────────────────────────────────────────────

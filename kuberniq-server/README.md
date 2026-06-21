@@ -16,12 +16,12 @@ Designed to run in-cluster and serve as the data layer for the Kuberniq Chat and
 - **JWT authentication** — login endpoint issues access + refresh tokens; all API endpoints require a valid Bearer token
 - **Full SPA dashboard** at `/` — sidebar navigation, namespace switcher, resource tables, log viewer
 - **Time-bounded log queries** — pass `?sinceTime=` (ISO-8601 UTC) or `?sinceSeconds=N` to fetch logs from a specific point in time; timestamps are automatically prepended to every line when a time window is requested
-- **Multi-container log support** — view logs per container or all containers merged in one call
+- **Rich pod container detail** — pod list response includes every container's `name`, `image`, `ready`, `restarts`, and `state` sourced from `Spec.Containers` (so pending or crash-looping containers always appear); init containers include image and state; pod `labels` and `nodeName` are included for sidecar-detection queries
 - **Multi-cluster support** — register remote clusters via `POST /clusters`; all endpoints gain `?cluster=<name>` routing
-- **Auto-reconnect** — recreates the Kubernetes client automatically on SSL/connection drops
+- **Helm packaged** — distributed as a Helm chart with fully overridable `values.yaml`
+- **Multi-container log support** — view logs per container or all containers merged in one call
 - **Troubleshoot endpoint** — aggregates pods, events and logs for a service in one call
 - **In-cluster & local** — uses in-cluster config when deployed, falls back to `~/.kube/config` locally
-- **Helm packaged** — distributed as a Helm chart with fully overridable `values.yaml`
 
 ---
 
@@ -188,7 +188,7 @@ Click **Logs** on any pod row to open the slide-up log panel:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/namespaces/{ns}/pods` | List pods with ready count, phase, restarts, per-container status |
+| GET | `/namespaces/{ns}/pods` | List pods — name, phase, ready, restarts, nodeName, labels, and per-container detail (name, image, state) for all containers including init containers |
 | GET | `/namespaces/{ns}/pods/{pod}/events` | Events scoped to a single pod |
 | GET | `/namespaces/{ns}/pods/{pod}/logs` | Default container logs — supports `?tail=N`, `?sinceTime=`, `?sinceSeconds=N` |
 | GET | `/namespaces/{ns}/pods/{pod}/logs/all` | All containers' logs as `{ containerName: logText }` — same time params supported |

@@ -611,31 +611,47 @@ app.MapGet("/namespaces/{ns}/pods", async (string ns) =>
 {
     var pods = await WithK8sRetryAsync(c => c.ListNamespacedPodAsync(ns));
     return Results.Ok(pods.Items.Select(p => {
-        var statuses = p.Status?.ContainerStatuses ?? [];
-        var initStatuses = p.Status?.InitContainerStatuses ?? [];
+        var statuses       = p.Status?.ContainerStatuses     ?? [];
+        var initStatuses   = p.Status?.InitContainerStatuses ?? [];
+        // Use Spec.Containers as authoritative source so pending containers still appear
+        var specContainers = p.Spec?.Containers              ?? [];
+        var specInitConts  = p.Spec?.InitContainers          ?? [];
         var readyCount = statuses.Count(s => s.Ready);
-        var totalCount = statuses.Count;
+        var totalCount = specContainers.Count;
         return new {
-            name       = p.Metadata.Name,
-            phase      = p.Status?.Phase,
-            ready      = $"{readyCount}/{totalCount}",
-            restarts   = statuses.Sum(s => s.RestartCount),
-            containers = statuses.Select(s => new {
-                name     = s.Name,
-                ready    = s.Ready,
-                restarts = s.RestartCount,
-                image    = s.Image,
-                state    = s.State?.Running  != null ? "Running"  :
-                           s.State?.Waiting  != null ? $"Waiting({s.State.Waiting.Reason})"  :
-                           s.State?.Terminated != null ? $"Terminated({s.State.Terminated.Reason})" : "Unknown"
+            name     = p.Metadata.Name,
+            phase    = p.Status?.Phase,
+            ready    = $"{readyCount}/{totalCount}",
+            restarts = statuses.Sum(s => s.RestartCount),
+            nodeName = p.Spec?.NodeName,
+            labels   = p.Metadata.Labels,
+            containers = specContainers.Select(c => {
+                var st = statuses.FirstOrDefault(s => s.Name == c.Name);
+                return new {
+                    name     = c.Name,
+                    image    = c.Image,
+                    ready    = st?.Ready       ?? false,
+                    restarts = st?.RestartCount ?? 0,
+                    state    = st == null                    ? "Pending"
+                             : st.State?.Running    != null  ? "Running"
+                             : st.State?.Waiting    != null  ? $"Waiting({st.State.Waiting.Reason})"
+                             : st.State?.Terminated != null  ? $"Terminated({st.State.Terminated.Reason})"
+                             : "Unknown"
+                };
             }),
-            initContainers = initStatuses.Select(s => new {
-                name     = s.Name,
-                ready    = s.Ready,
-                restarts = s.RestartCount,
-                state    = s.State?.Running  != null ? "Running"  :
-                           s.State?.Waiting  != null ? $"Waiting({s.State.Waiting.Reason})"  :
-                           s.State?.Terminated != null ? $"Terminated({s.State.Terminated.Reason})" : "Unknown"
+            initContainers = specInitConts.Select(c => {
+                var st = initStatuses.FirstOrDefault(s => s.Name == c.Name);
+                return new {
+                    name     = c.Name,
+                    image    = c.Image,
+                    ready    = st?.Ready       ?? false,
+                    restarts = st?.RestartCount ?? 0,
+                    state    = st == null                    ? "Pending"
+                             : st.State?.Running    != null  ? "Running"
+                             : st.State?.Waiting    != null  ? $"Waiting({st.State.Waiting.Reason})"
+                             : st.State?.Terminated != null  ? $"Terminated({st.State.Terminated.Reason})"
+                             : "Unknown"
+                };
             })
         };
     }));

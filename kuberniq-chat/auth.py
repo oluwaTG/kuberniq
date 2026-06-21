@@ -40,10 +40,12 @@ import os
 import secrets
 import string
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
 import bcrypt
+import jwt as _jwt
 
 # ── Storage paths ─────────────────────────────────────────────────────────────
 DATA_DIR              = Path(os.getenv("KUBERNIQ_DATA_DIR", "./data"))
@@ -306,3 +308,53 @@ def permission_denied_note(intent: str, role: str) -> str:
         f"[PERMISSION_DENIED] Your role ('{role}') does not allow access to '{intent}' data. "
         "Please ask an admin to upgrade your permissions if you need this."
     )
+
+
+# ---------------------------------------------------------------------------
+# JWT session tokens (cookie-based persistence across pod restarts)
+# ---------------------------------------------------------------------------
+
+SESSION_COOKIE = "kuberniq_session"
+TOKEN_DAYS = 30
+_JWT_SECRET_FILE = DATA_DIR / "jwt_secret.txt"
+
+
+def _get_signing_key() -> str:
+    """Return the persistent HS256 signing key, creating it on first boot."""
+    if _JWT_SECRET_FILE.exists():
+        return _JWT_SECRET_FILE.read_text().strip()
+    key = secrets.token_urlsafe(32)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _JWT_SECRET_FILE.write_text(key)
+    return key
+
+
+def issue_session_token(user: dict, days: int = TOKEN_DAYS) -> str:
+    """
+    Sign and return a JWT that encodes the user's identity.
+    The token is stored in a browser cookie so sessions survive pod restarts.
+    """
+    key = _get_signing_key()
+    exp = datetime.now(tz=timezone.utc) + timedelta(days=days)
+    payload = {
+        "sub": user["username"],
+        "role": user["role"],
+        "allowed_namespaces": user.get("allowed_namespaces", []),
+        "exp": exp,
+    }
+    return _jwt.encode(payload, key, algorithm="HS256")
+
+
+def validate_session_token(token: str) -> Optional[dict]:
+    """
+    Decode and verify a JWT session token.
+    Returns the **current** user record from disk (so role/ns changes take
+    effect immediately without requiring a new token) or None if invalid.
+    """
+    try:
+        key = _get_signing_key()
+        data = _jwt.decode(token, key, algorithms=["HS256"])
+        users = _load_users()
+        return users.get(data["sub"])
+    except Exception:
+        return None

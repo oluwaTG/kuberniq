@@ -5,3 +5,5 @@ python-dotenv
 pyyaml
 python-dateutil
 bcrypt
+PyJWT
+extra-streamlit-components

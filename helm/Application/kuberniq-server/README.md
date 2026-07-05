@@ -43,6 +43,10 @@ Assuming your Ingress is set to `http://mcp-server.local`:
   - Lists pods in the namespace `{ns}`.
   - Example: `curl http://mcp-server.local/namespaces/dev/pods`
 
+### Pod Details
+- `GET /namespaces/{ns}/pods/{pod}`
+  - Returns a compact pod detail summary, including owner, conditions, containers, important volumes, and recent or warning events.
+
 ### Pod Events
 - `GET /namespaces/{ns}/pods/{pod}/events`
   - Lists events for a pod.

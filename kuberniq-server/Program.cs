@@ -159,13 +159,20 @@ Kubernetes GetClient() =>
             $"Cluster '{currentCluster.Value}' is not registered. " +
             "Use GET /clusters to list available clusters or POST /clusters to register one.");
 
-// Middleware: cluster routing + JWT auth enforcement
+// Middleware: cluster routing + JWT auth enforcement + cache prevention
 // Public paths: /health, /auth/*
 app.Use(async (ctx, next) =>
 {
     currentCluster.Value = ctx.Request.Query["cluster"].FirstOrDefault();
 
+    // Prevent the browser from caching any API response so the Refresh button
+    // always fetches live data from the cluster rather than a stale browser copy.
     var path = ctx.Request.Path.Value ?? "";
+    if (path != "/" && !path.StartsWith("/auth/oidc"))
+    {
+        ctx.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        ctx.Response.Headers["Pragma"]        = "no-cache";
+    }
     // Only unauthenticated auth endpoints are public; user-management endpoints require a token
     bool isPublic = path == "/health" || path == "/" ||
                     path == "/auth/login"        || path == "/auth/refresh" || path == "/auth/logout" ||
@@ -655,6 +662,118 @@ app.MapGet("/namespaces/{ns}/pods", async (string ns) =>
             })
         };
     }));
+});
+
+app.MapGet("/namespaces/{ns}/pods/{pod}", async (string ns, string pod) =>
+{
+    var podObj = await WithK8sRetryAsync(c => c.ReadNamespacedPodAsync(pod, ns));
+    var fieldSelector = $"involvedObject.name={pod},involvedObject.namespace={ns}";
+    var evts = await WithK8sRetryAsync(c => c.CoreV1.ListNamespacedEventAsync(ns, fieldSelector: fieldSelector));
+
+    var statuses = podObj.Status?.ContainerStatuses ?? [];
+    var initStatuses = podObj.Status?.InitContainerStatuses ?? [];
+
+    object ContainerDetail(V1Container c, V1ContainerStatus? st) => new
+    {
+        name = c.Name,
+        image = c.Image,
+        imagePullPolicy = c.ImagePullPolicy,
+        ready = st?.Ready ?? false,
+        restartCount = st?.RestartCount ?? 0,
+        state = st == null ? "Pending"
+              : st.State?.Running != null ? "Running"
+              : st.State?.Waiting != null ? $"Waiting({st.State.Waiting.Reason})"
+              : st.State?.Terminated != null ? $"Terminated({st.State.Terminated.Reason})"
+              : "Unknown",
+        reason = st?.State?.Waiting?.Reason ?? st?.State?.Terminated?.Reason,
+        message = st?.State?.Waiting?.Message ?? st?.State?.Terminated?.Message,
+        startedAt = st?.State?.Running?.StartedAt ?? st?.State?.Terminated?.StartedAt,
+        finishedAt = st?.State?.Terminated?.FinishedAt,
+        lastState = st?.LastState?.Waiting != null ? $"Waiting({st.LastState.Waiting.Reason})"
+                 : st?.LastState?.Terminated != null ? $"Terminated({st.LastState.Terminated.Reason})"
+                 : st?.LastState?.Running != null ? "Running"
+                 : null,
+        ports = c.Ports?.Select(p => new { name = p.Name, port = p.ContainerPort, protocol = p.Protocol }),
+        resources = new
+        {
+            requests = c.Resources?.Requests?.ToDictionary(kv => kv.Key, kv => kv.Value.ToString()),
+            limits = c.Resources?.Limits?.ToDictionary(kv => kv.Key, kv => kv.Value.ToString())
+        },
+        probes = new
+        {
+            readiness = c.ReadinessProbe != null,
+            liveness = c.LivenessProbe != null,
+            startup = c.StartupProbe != null
+        },
+        env = c.Env?.Select(e => new
+        {
+            name = e.Name,
+            value = e.Value is null ? null : "set",
+            valueFrom = e.ValueFrom is null ? null
+                      : e.ValueFrom.SecretKeyRef != null ? $"secret/{e.ValueFrom.SecretKeyRef.Name}:{e.ValueFrom.SecretKeyRef.Key}"
+                      : e.ValueFrom.ConfigMapKeyRef != null ? $"configmap/{e.ValueFrom.ConfigMapKeyRef.Name}:{e.ValueFrom.ConfigMapKeyRef.Key}"
+                      : e.ValueFrom.FieldRef != null ? $"field/{e.ValueFrom.FieldRef.FieldPath}"
+                      : e.ValueFrom.ResourceFieldRef != null ? $"resource/{e.ValueFrom.ResourceFieldRef.Resource}"
+                      : "valueFrom"
+        }),
+        volumeMounts = c.VolumeMounts?.Select(v => new { name = v.Name, mountPath = v.MountPath, readOnly = v.ReadOnlyProperty })
+    };
+
+    return Results.Ok(new
+    {
+        name = podObj.Metadata.Name,
+        @namespace = podObj.Metadata.NamespaceProperty,
+        uid = podObj.Metadata.Uid,
+        phase = podObj.Status?.Phase,
+        podIP = podObj.Status?.PodIP,
+        hostIP = podObj.Status?.HostIP,
+        nodeName = podObj.Spec?.NodeName,
+        serviceAccount = podObj.Spec?.ServiceAccountName,
+        priorityClass = podObj.Spec?.PriorityClassName,
+        qosClass = podObj.Status?.QosClass,
+        restartPolicy = podObj.Spec?.RestartPolicy,
+        startTime = podObj.Status?.StartTime,
+        labels = podObj.Metadata.Labels,
+        annotations = podObj.Metadata.Annotations,
+        ownerReferences = podObj.Metadata.OwnerReferences?.Select(o => new
+        {
+            kind = o.Kind,
+            name = o.Name,
+            controller = o.Controller
+        }),
+        conditions = podObj.Status?.Conditions?.Select(c => new
+        {
+            type = c.Type,
+            status = c.Status,
+            reason = c.Reason,
+            message = c.Message,
+            lastTransitionTime = c.LastTransitionTime
+        }),
+        containers = podObj.Spec?.Containers?.Select(c =>
+            ContainerDetail(c, statuses.FirstOrDefault(s => s.Name == c.Name))),
+        initContainers = podObj.Spec?.InitContainers?.Select(c =>
+            ContainerDetail(c, initStatuses.FirstOrDefault(s => s.Name == c.Name))),
+        volumes = podObj.Spec?.Volumes?.Select(v => new
+        {
+            name = v.Name,
+            type = v.ConfigMap != null ? "ConfigMap"
+                 : v.Secret != null ? "Secret"
+                 : v.PersistentVolumeClaim != null ? "PersistentVolumeClaim"
+                 : v.EmptyDir != null ? "EmptyDir"
+                 : v.HostPath != null ? "HostPath"
+                 : v.Projected != null ? "Projected"
+                 : v.DownwardAPI != null ? "DownwardAPI"
+                 : "Other",
+            source = v.ConfigMap?.Name
+                  ?? v.Secret?.SecretName
+                  ?? v.PersistentVolumeClaim?.ClaimName
+                  ?? v.HostPath?.Path
+        }),
+        events = evts.Items
+            .OrderByDescending(e => e.LastTimestamp ?? e.Metadata.CreationTimestamp)
+            .Take(10)
+            .Select(e => new { e.Type, e.Reason, e.Message, e.Count, e.FirstTimestamp, e.LastTimestamp })
+    });
 });
 
 

@@ -50,8 +50,10 @@
   .pills{display:flex;gap:.5rem}
   .pill{background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:.2rem .75rem;font-size:.78rem;color:var(--muted)}
   .pill span{color:var(--text);font-weight:600}
-  #refresh-btn{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:.3rem .7rem;font-size:.8rem;cursor:pointer;transition:all .15s}
-  #refresh-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .topbar-action{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:.3rem .7rem;font-size:.8rem;cursor:pointer;transition:all .15s;min-height:30px}
+  .topbar-action:hover{border-color:var(--accent);color:var(--accent)}
+  #auto-refresh-btn.active{border-color:var(--accent2);color:var(--accent2);background:#38d9a912}
+  #last-updated{font-size:.72rem;color:var(--muted);white-space:nowrap;min-width:78px;text-align:right}
 
   #content{flex:1;overflow-y:auto;padding:1.5rem}
 
@@ -103,6 +105,36 @@
   .log-line.hl-warn{color:var(--warn)}
   .log-line.hl-info{color:var(--accent2)}
   .log-line.hl-match{background:#f7a94f22;border-radius:2px}
+
+  /* ── Detail drawer ── */
+  #detail-backdrop{position:fixed;inset:0;background:#0008;opacity:0;pointer-events:none;transition:opacity .18s ease;z-index:180}
+  #detail-backdrop.open{opacity:1;pointer-events:auto}
+  #detail-drawer{position:fixed;top:0;right:0;width:min(560px,100vw);height:100vh;background:var(--surface);border-left:1px solid var(--border);transform:translateX(100%);transition:transform .22s ease;z-index:181;display:flex;flex-direction:column;box-shadow:-24px 0 50px #0006}
+  #detail-drawer.open{transform:translateX(0)}
+  #detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;padding:1rem 1.1rem;border-bottom:1px solid var(--border);flex-shrink:0}
+  #detail-title{font-size:1rem;font-weight:700;color:var(--text);line-height:1.3;word-break:break-word}
+  #detail-subtitle{font-size:.75rem;color:var(--muted);margin-top:.25rem}
+  #detail-close{background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;width:30px;height:30px;cursor:pointer;flex-shrink:0}
+  #detail-close:hover{border-color:var(--danger);color:var(--danger)}
+  #detail-body{padding:1rem 1.1rem;overflow-y:auto;display:flex;flex-direction:column;gap:1rem}
+  .detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}
+  .detail-kv{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:.65rem .75rem;min-width:0}
+  .detail-kv .k{font-size:.66rem;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.22rem}
+  .detail-kv .v{font-size:.82rem;color:var(--text);word-break:break-word}
+  .detail-block{border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface)}
+  .detail-block h3{font-size:.82rem;font-weight:700;padding:.65rem .75rem;border-bottom:1px solid var(--border);background:var(--surface2)}
+  .detail-block .inner{padding:.75rem;overflow:auto}
+  .detail-list{display:flex;flex-direction:column;gap:.5rem}
+  .detail-item{border:1px solid var(--border);border-radius:8px;padding:.65rem .75rem;background:#ffffff04}
+  .detail-item-title{font-size:.82rem;font-weight:700;margin-bottom:.35rem;color:var(--text)}
+  .detail-muted{color:var(--muted);font-size:.75rem}
+  .detail-chips{display:flex;gap:.35rem;flex-wrap:wrap}
+  .chip{display:inline-flex;align-items:center;gap:.25rem;border:1px solid var(--border);border-radius:999px;padding:.12rem .45rem;font-size:.7rem;color:var(--muted);background:var(--surface2)}
+  .kv-table{width:100%;table-layout:fixed}
+  .kv-table td:first-child{color:var(--muted);width:34%;white-space:nowrap}
+  .kv-table td{font-size:.75rem;vertical-align:top;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+  .detail-block table{table-layout:fixed}
+  .detail-block td,.detail-block th{overflow-wrap:anywhere;word-break:break-word}
 
   /* ── Node cards ── */
   .node-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem;padding:1rem}
@@ -360,8 +392,10 @@
         <div class="pill">Namespaces <span id="tb-ns">—</span></div>
         <div class="pill">Pods <span id="tb-pods">—</span></div>
       </div>
-      <button id="refresh-btn" onclick="refreshView()">&#8635; Refresh</button>
-      <button id="logout-btn" onclick="doLogout()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:.3rem .7rem;font-size:.8rem;cursor:pointer;transition:all .15s" onmouseenter="this.style.borderColor='var(--danger)';this.style.color='var(--danger)'" onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">&#x2192; Sign out</button>
+      <span id="last-updated">—</span>
+      <button id="auto-refresh-btn" class="topbar-action" onclick="toggleAutoRefresh()" title="Refresh current view every 10 seconds">Auto: On</button>
+      <button id="refresh-btn" class="topbar-action" onclick="refreshView()">&#8635; Refresh</button>
+      <button id="logout-btn" class="topbar-action" onclick="doLogout()" onmouseenter="this.style.borderColor='var(--danger)';this.style.color='var(--danger)'" onmouseleave="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">&#x2192; Sign out</button>
     </div>
   </div>
   <div id="content"><div class="loader">Loading</div></div>
@@ -392,6 +426,19 @@
   <div id="log-body"></div>
 </div>
 
+<!-- ═══ Detail Drawer ═══ -->
+<div id="detail-backdrop" onclick="closeDetailDrawer()"></div>
+<aside id="detail-drawer" aria-hidden="true">
+  <div id="detail-head">
+    <div>
+      <div id="detail-title">Resource details</div>
+      <div id="detail-subtitle">—</div>
+    </div>
+    <button id="detail-close" onclick="closeDetailDrawer()">&#10005;</button>
+  </div>
+  <div id="detail-body"><div class="loader">Loading</div></div>
+</aside>
+
 <script>
 "use strict";
 const API = '';
@@ -401,6 +448,10 @@ let currentCluster = 'local';
 let logTarget      = null;
 let rawLogLines    = [];
 let logWrap        = true;
+let autoRefresh    = localStorage.getItem('kuberniq_auto_refresh') !== 'false';
+let autoRefreshTimer = null;
+let refreshInFlight = false;
+const AUTO_REFRESH_MS = 10_000;
 
 // ── Auth helpers ───────────────────────────────────────────────────────────
 function getToken()         { return localStorage.getItem('kuberniq_access_token'); }
@@ -481,6 +532,7 @@ async function doLogin() {
     setTokens(accessToken, refreshToken);
     hideLogin();
     await initDashboard();
+    startAutoRefresh();
   } catch(e) {
     errEl.textContent = 'Could not connect to server.';
   } finally {
@@ -490,6 +542,7 @@ async function doLogin() {
 }
 
 async function doLogout() {
+  stopAutoRefresh();
   try {
     await fetch('/auth/logout', {
       method: 'POST',
@@ -527,6 +580,9 @@ async function tryRefreshToken() {
   document.getElementById('login-pass').addEventListener('keydown', e => {
     if (e.key === 'Enter') doLogin();
   });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeDetailDrawer();
+  });
 
   // Populate the hint with the correct namespace from the server
   let healthData = {};
@@ -546,6 +602,7 @@ async function tryRefreshToken() {
     history.replaceState(null, '', window.location.pathname);
     hideLogin();
     await initDashboard();
+    startAutoRefresh();
     return;
   }
   if (frag.has('oidc_error')) {
@@ -571,6 +628,7 @@ async function tryRefreshToken() {
   }
   hideLogin();
   await initDashboard();
+  startAutoRefresh();
 })();
 
 async function initDashboard() {
@@ -601,10 +659,12 @@ async function initDashboard() {
   }
 
   // Load topbar cluster info
-  updateTopbar();
+  await updateTopbar();
 
   // Render default view
-  renderView('overview');
+  await renderView('overview');
+  setLastUpdated();
+  updateAutoRefreshButton();
 }
 
 async function updateTopbar() {
@@ -650,14 +710,16 @@ async function onClusterChange() {
   } catch(_) {
     populateNsSelect([]);
   }
-  updateTopbar();
-  renderView(currentView);
+  await updateTopbar();
+  await renderView(currentView);
+  setLastUpdated();
 }
 
 function populateNsSelect(nsList) {
   const sel = document.getElementById('ns-select');
   if (!nsList.length) {
     sel.innerHTML = '<option value="">No namespaces</option>';
+    currentNs = '';
     return;
   }
   sel.innerHTML = nsList.map(n => `<option value="${n}">${n}</option>`).join('');
@@ -667,10 +729,30 @@ function populateNsSelect(nsList) {
   currentNs = preferred;
 }
 
+function syncNsSelect(nsList) {
+  const sel = document.getElementById('ns-select');
+  const previous = currentNs || sel.value;
+  if (!Array.isArray(nsList) || !nsList.length) {
+    sel.innerHTML = '<option value="">No namespaces</option>';
+    currentNs = '';
+    return previous !== currentNs;
+  }
+
+  sel.innerHTML = nsList.map(n => `<option value="${n}">${n}</option>`).join('');
+  if (previous && nsList.includes(previous)) {
+    currentNs = previous;
+  } else {
+    currentNs = nsList.find(n => !n.startsWith('kube-') && n !== 'default') || nsList[0];
+  }
+  sel.value = currentNs;
+  return previous !== currentNs;
+}
+
 function onNsChange() {
   currentNs = document.getElementById('ns-select').value;
   renderView(currentView);
   updateTopbar();
+  setLastUpdated();
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
@@ -680,9 +762,69 @@ function navigate(el) {
   currentView = el.dataset.view;
   document.getElementById('page-title').textContent = el.textContent.trim();
   renderView(currentView);
+  setLastUpdated();
 }
 
-function refreshView() { renderView(currentView); }
+async function refreshView() {
+  await refreshDashboard({ silent: false });
+}
+
+async function refreshDashboard({ silent = false } = {}) {
+  if (refreshInFlight || !getToken()) return;
+  refreshInFlight = true;
+  try {
+    let namespaceChanged = false;
+    try {
+      const nsList = await apiFetch('/namespaces');
+      namespaceChanged = syncNsSelect(Array.isArray(nsList) ? nsList : []);
+    } catch(e) {
+      if (e.message === 'Unauthorized') return;
+    }
+    await updateTopbar();
+    await renderView(currentView, { silent: silent && !namespaceChanged });
+    setLastUpdated();
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  updateAutoRefreshButton();
+  if (!autoRefresh) return;
+  autoRefreshTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    refreshDashboard({ silent: true });
+  }, AUTO_REFRESH_MS);
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer) window.clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+}
+
+function toggleAutoRefresh() {
+  autoRefresh = !autoRefresh;
+  localStorage.setItem('kuberniq_auto_refresh', String(autoRefresh));
+  startAutoRefresh();
+}
+
+function updateAutoRefreshButton() {
+  const btn = document.getElementById('auto-refresh-btn');
+  if (!btn) return;
+  btn.textContent = autoRefresh ? 'Auto: On' : 'Auto: Off';
+  btn.classList.toggle('active', autoRefresh);
+}
+
+function setLastUpdated() {
+  const el = document.getElementById('last-updated');
+  if (!el) return;
+  el.textContent = 'Updated ' + new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
 
 function toggleNavGroup(id) {
   const group = document.getElementById(id);
@@ -709,10 +851,10 @@ function openGroupForView(view) {
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────
-async function renderView(view) {
+async function renderView(view, { silent = false } = {}) {
   openGroupForView(view);
   const el = document.getElementById('content');
-  el.innerHTML = '<div class="loader">Loading</div>';
+  if (!silent) el.innerHTML = '<div class="loader">Loading</div>';
   try {
     switch (view) {
       case 'overview':     await renderOverview(el);     break;
@@ -748,7 +890,8 @@ function clusterParam(path) {
 }
 async function apiFetch(path) {
   const r = await fetch(API + clusterParam(path), {
-    headers: { 'Authorization': 'Bearer ' + getToken() }
+    headers: { 'Authorization': 'Bearer ' + getToken() },
+    cache: 'no-store'
   });
   if (r.status === 401) {
     const refreshed = await tryRefreshToken();
@@ -762,7 +905,8 @@ async function apiFetch(path) {
 }
 async function apiText(path) {
   const r = await fetch(API + clusterParam(path), {
-    headers: { 'Authorization': 'Bearer ' + getToken() }
+    headers: { 'Authorization': 'Bearer ' + getToken() },
+    cache: 'no-store'
   });
   if (r.status === 401) {
     const refreshed = await tryRefreshToken();
@@ -967,6 +1111,10 @@ function podsTable(pods, ns) {
     <td ${ctrTitle} style="cursor:${ctrs?'help':'default'}">${readyBadge}</td>
     <td>${p.restarts ?? 0}</td>
     <td style="display:flex;gap:.3rem;flex-wrap:wrap">
+      <button onclick="openPodDetails('${ns}','${p.name}')"
+        style="background:none;border:1px solid var(--border);color:var(--accent2);border-radius:4px;padding:.2rem .5rem;font-size:.75rem;cursor:pointer">
+        Details
+      </button>
       <button onclick="openLog('${ns}','${p.name}')"
         style="background:none;border:1px solid var(--border);color:var(--accent);border-radius:4px;padding:.2rem .5rem;font-size:.75rem;cursor:pointer">
         &#128203; Logs
@@ -1193,6 +1341,207 @@ async function renderNetworkpolicies(el) {
     <td>${n.ingressRules} ingress / ${n.egressRules} egress</td>
   </tr>`).join('');
   el.innerHTML = mkSection('Network Policies', nps.length, `<table><thead><tr><th>Name</th><th>Types</th><th>Pod Selector</th><th>Rules</th></tr></thead><tbody>${rows}</tbody></table>`);
+}
+
+// ── Resource detail drawer ─────────────────────────────────────────────────
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function fmt(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  return escapeHtml(value);
+}
+
+function fmtDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fmt(value) : escapeHtml(date.toLocaleString());
+}
+
+function kvCard(label, value) {
+  return `<div class="detail-kv"><div class="k">${escapeHtml(label)}</div><div class="v">${fmt(value)}</div></div>`;
+}
+
+function dictChips(obj) {
+  const entries = Object.entries(obj || {});
+  if (!entries.length) return '<div class="detail-muted">None</div>';
+  return `<div class="detail-chips">${entries.map(([k, v]) =>
+    `<span class="chip"><span>${escapeHtml(k)}</span><span>=</span><span>${escapeHtml(v)}</span></span>`
+  ).join('')}</div>`;
+}
+
+function importantLabels(labels) {
+  const entries = Object.entries(labels || {});
+  if (!entries.length) return '';
+  const preferred = [
+    'app.kubernetes.io/name',
+    'app.kubernetes.io/instance',
+    'app.kubernetes.io/component',
+    'app',
+    'component',
+    'release',
+    'pod-template-hash'
+  ];
+  const picked = [];
+  preferred.forEach(key => {
+    const found = entries.find(([k]) => k === key);
+    if (found && !picked.some(([k]) => k === found[0])) picked.push(found);
+  });
+  entries.forEach(entry => {
+    if (picked.length < 6 && !picked.some(([k]) => k === entry[0])) picked.push(entry);
+  });
+  return `<div class="detail-block"><h3>Labels</h3><div class="inner">${dictChips(Object.fromEntries(picked))}</div></div>`;
+}
+
+function compactImage(image) {
+  if (!image) return '—';
+  const withoutRegistry = image.includes('/') ? image.split('/').slice(-2).join('/') : image;
+  const [name, digest] = withoutRegistry.split('@sha256:');
+  if (digest) return `${name}@${digest.slice(0, 12)}...`;
+  return withoutRegistry;
+}
+
+function smallKvTable(rows) {
+  return `<table class="kv-table"><tbody>${rows.map(([k, v]) =>
+    `<tr><td>${escapeHtml(k)}</td><td>${v}</td></tr>`
+  ).join('')}</tbody></table>`;
+}
+
+function renderContainers(containers, title) {
+  const list = containers || [];
+  if (!list.length) return '';
+  return `<div class="detail-block">
+    <h3>${escapeHtml(title)} (${list.length})</h3>
+    <div class="inner detail-list">
+      ${list.map(c => {
+        const probes = c.probes || {};
+        const probeChips = Object.entries(probes)
+          .filter(([, enabled]) => enabled)
+          .map(([name]) => `<span class="chip">${escapeHtml(name)}</span>`)
+          .join('') || '<span class="detail-muted">No probes</span>';
+        const resources = c.resources || {};
+        const hasResources = resources.requests || resources.limits;
+        const stateText = `${phaseTag(c.state || 'Unknown')} ${c.reason ? `<span class="detail-muted">${escapeHtml(c.reason)}</span>` : ''}`;
+        const rows = [
+          ['Image', fmt(compactImage(c.image))],
+          ['State', stateText],
+          ['Restarts', fmt(c.restartCount)],
+          ['Probes', probeChips]
+        ];
+        if (hasResources) {
+          rows.push(['Requests', escapeHtml(resources.requests ? JSON.stringify(resources.requests) : '—')]);
+          rows.push(['Limits', escapeHtml(resources.limits ? JSON.stringify(resources.limits) : '—')]);
+        }
+        if (c.message) rows.push(['Message', fmt(c.message)]);
+        return `<div class="detail-item">
+          <div class="detail-item-title">${escapeHtml(c.name)} ${readyTag(!!c.ready)}</div>
+          ${smallKvTable(rows)}
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function renderConditions(conditions) {
+  const list = (conditions || []).filter(c => c.status !== 'True' || c.reason || c.message);
+  if (!list.length) return '';
+  const rows = list.map(c => `<tr>
+    <td>${escapeHtml(c.type)}</td>
+    <td>${c.status === 'True' ? readyTag(true) : `<span class="tag tag-warn">${fmt(c.status)}</span>`}</td>
+    <td>${fmt(c.reason)}</td>
+    <td style="white-space:normal">${fmt(c.message)}</td>
+  </tr>`).join('');
+  return `<div class="detail-block">
+    <h3>Attention Conditions</h3>
+    <div class="inner"><table><thead><tr><th>Type</th><th>Status</th><th>Reason</th><th>Message</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </div>`;
+}
+
+function renderVolumes(volumes) {
+  const list = (volumes || []).filter(v => ['Secret', 'ConfigMap', 'PersistentVolumeClaim', 'HostPath'].includes(v.type));
+  if (!list.length) return '';
+  return `<div class="detail-block">
+    <h3>Important Volumes (${list.length})</h3>
+    <div class="inner detail-chips">${list.map(v =>
+      `<span class="chip">${escapeHtml(v.name)} · ${escapeHtml(v.type)}${v.source ? ' · ' + escapeHtml(v.source) : ''}</span>`
+    ).join('')}</div>
+  </div>`;
+}
+
+function renderDetailEvents(events) {
+  const warnings = (events || []).filter(e => e.type === 'Warning');
+  const list = warnings.length ? warnings : (events || []).slice(0, 3);
+  if (!list.length) return '';
+  const rows = list.map(e => `<tr>
+    <td><span class="tag ${e.type === 'Warning' ? 'tag-warn' : 'tag-green'}">${fmt(e.type)}</span></td>
+    <td>${fmt(e.reason)}</td>
+    <td style="white-space:normal">${fmt(e.message)}</td>
+    <td>${fmt(e.count || 1)}</td>
+    <td>${fmtDate(e.lastTimestamp)}</td>
+  </tr>`).join('');
+  return `<div class="detail-block">
+    <h3>${warnings.length ? 'Warning Events' : 'Recent Events'}</h3>
+    <div class="inner"><table><thead><tr><th>Type</th><th>Reason</th><th>Message</th><th>Count</th><th>Last Seen</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </div>`;
+}
+
+async function openPodDetails(ns, pod) {
+  const drawer = document.getElementById('detail-drawer');
+  const backdrop = document.getElementById('detail-backdrop');
+  const title = document.getElementById('detail-title');
+  const subtitle = document.getElementById('detail-subtitle');
+  const body = document.getElementById('detail-body');
+
+  title.textContent = pod;
+  subtitle.textContent = `Pod · ${ns}`;
+  body.innerHTML = '<div class="loader">Loading details</div>';
+  drawer.classList.add('open');
+  backdrop.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+
+  try {
+    const p = await apiFetch(`/namespaces/${ns}/pods/${pod}`);
+    const containers = p.containers || [];
+    const initContainers = p.initContainers || [];
+    const readyContainers = containers.filter(c => c.ready).length;
+    const restarts = containers.reduce((sum, c) => sum + (Number(c.restartCount) || 0), 0)
+      + initContainers.reduce((sum, c) => sum + (Number(c.restartCount) || 0), 0);
+    const owner = (p.ownerReferences || []).find(o => o.controller) || (p.ownerReferences || [])[0];
+    title.textContent = p.name || pod;
+    subtitle.textContent = `Pod · ${p.namespace || ns}`;
+    body.innerHTML = `
+      <div class="detail-grid">
+        ${kvCard('Phase', p.phase)}
+        ${kvCard('Node', p.nodeName)}
+        ${kvCard('Ready', `${readyContainers}/${containers.length}`)}
+        ${kvCard('Restarts', restarts)}
+        ${kvCard('Service Account', p.serviceAccount)}
+        ${kvCard('Owner', owner ? `${owner.kind}/${owner.name}` : '—')}
+        ${kvCard('Started', fmtDate(p.startTime))}
+      </div>
+      ${importantLabels(p.labels)}
+      ${renderContainers(initContainers, 'Init Containers')}
+      ${renderContainers(containers, 'Containers')}
+      ${renderConditions(p.conditions)}
+      ${renderVolumes(p.volumes)}
+      ${renderDetailEvents(p.events)}
+    `;
+  } catch(e) {
+    body.innerHTML = `<div class="empty">&#9888; Failed to load pod details: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function closeDetailDrawer() {
+  document.getElementById('detail-drawer').classList.remove('open');
+  document.getElementById('detail-backdrop').classList.remove('open');
+  document.getElementById('detail-drawer').setAttribute('aria-hidden', 'true');
 }
 
 // ── Log viewer ─────────────────────────────────────────────────────────────

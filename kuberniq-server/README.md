@@ -11,10 +11,10 @@ Designed to run in-cluster and serve as the data layer for the Kuberniq Chat and
 - **ArgoCD-style bootstrap** — first-run auto-creates an `admin` user with a random password stored in a K8s Secret; no setup wizard needed
 - **Role-based access control** — three built-in roles: `admin`, `operator`, `viewer`
 - **External OIDC authentication (Phase 1)** — accepts JWTs from any OIDC-compliant provider (Entra ID, AWS Cognito, Google, Okta); enabled via a single K8s Secret; disabled by default
-- **Full SPA dashboard** at `/` — login page, collapsible sidebar navigation, namespace switcher, resource tables, log viewer, user management (admin)
+- **Full SPA dashboard** at `/` — login page, collapsible sidebar navigation, namespace switcher, resource tables, pod detail drawer, log viewer, user management (admin)
 - **Live cluster data** — 40+ endpoints covering every major Kubernetes resource type
 - **JWT authentication** — login endpoint issues access + refresh tokens; all API endpoints require a valid Bearer token
-- **Full SPA dashboard** at `/` — sidebar navigation, namespace switcher, resource tables, log viewer
+- **Auto-refreshing dashboard** — optional 10-second live refresh with namespace re-sync and last-updated status
 - **Time-bounded log queries** — pass `?sinceTime=` (ISO-8601 UTC) or `?sinceSeconds=N` to fetch logs from a specific point in time; timestamps are automatically prepended to every line when a time window is requested
 - **Rich pod container detail** — pod list response includes every container's `name`, `image`, `ready`, `restarts`, and `state` sourced from `Spec.Containers` (so pending or crash-looping containers always appear); init containers include image and state; pod `labels` and `nodeName` are included for sidecar-detection queries
 - **Multi-cluster support** — register remote clusters via `POST /clusters`; all endpoints gain `?cluster=<name>` routing
@@ -118,7 +118,7 @@ helm uninstall kuberniq-server --namespace kuberniq-server
 | Value | Default | Description |
 |-------|---------|-------------|
 | `image.repository` | `elumole22/kuberniq-server` | Container image registry and name |
-| `image.tag` | `1.0.7` | Image tag — update on every release |
+| `image.tag` | `1.1.0` | Image tag — update on every release |
 | `ingress.enabled` | `true` | Enable/disable the ingress |
 | `ingress.hosts[0].host` | `kuberniq-server.local` | Hostname for the dashboard |
 | `ingress.className` | `nginx` | Ingress class (change if using Traefik, etc.) |
@@ -137,7 +137,7 @@ The SPA dashboard is served at `/` and includes:
 
 - **Overview** — cluster version, node count, pod count, not-ready pods, deployment health
 - **Nodes** — CPU/memory capacity and allocatable per node
-- **Pods** — ready count (`2/2`), phase, restarts, per-container status tooltip, log viewer
+- **Pods** — ready count (`2/2`), phase, restarts, per-container status tooltip, compact detail drawer, log viewer
 - **Deployments / StatefulSets / DaemonSets** — replica status
 - **Jobs / CronJobs** — status badge, succeeded/failed counts, schedule and last run times
 - **Autoscalers (HPA)** — min–max range, current vs desired replicas, "At Max" warning
@@ -146,6 +146,18 @@ The SPA dashboard is served at `/` and includes:
 - **PVCs / Storage Classes** — storage resources with capacity and binding mode
 - **Events** — namespace-wide Warning/Normal events sorted by last seen
 - **Resource Quotas** — used vs hard limit per resource
+
+The top bar includes an **Auto: On / Off** toggle. When enabled, the current view refreshes every 10 seconds without showing a full loading state. Namespace changes are re-synced during refresh, so deleted namespaces no longer leave the dashboard pointed at stale state.
+
+### Pod detail drawer
+
+Click **Details** on any pod row to open a right-side drawer with compact operational context:
+- phase, node, ready containers, restart count, service account, owner, and start time
+- important labels
+- init container and container image/state/probe/resource summary
+- attention conditions
+- important Secret, ConfigMap, PVC, and HostPath volumes
+- warning events, or recent events when no warnings exist
 
 ### Log viewer
 
@@ -189,6 +201,7 @@ Click **Logs** on any pod row to open the slide-up log panel:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/namespaces/{ns}/pods` | List pods — name, phase, ready, restarts, nodeName, labels, and per-container detail (name, image, state) for all containers including init containers |
+| GET | `/namespaces/{ns}/pods/{pod}` | Pod detail summary — metadata, owner, conditions, containers, important volumes, and recent/warning events |
 | GET | `/namespaces/{ns}/pods/{pod}/events` | Events scoped to a single pod |
 | GET | `/namespaces/{ns}/pods/{pod}/logs` | Default container logs — supports `?tail=N`, `?sinceTime=`, `?sinceSeconds=N` |
 | GET | `/namespaces/{ns}/pods/{pod}/logs/all` | All containers' logs as `{ containerName: logText }` — same time params supported |

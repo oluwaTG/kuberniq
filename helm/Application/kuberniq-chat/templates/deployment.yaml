@@ -52,6 +52,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.mcpAuth.secretName }}
                   key: {{ .Values.mcpAuth.passwordKey }}
+            {{- else }}
+            - name: MCP_USERNAME
+              value: {{ .Values.mcpAuth.username | quote }}
+            - name: MCP_PASSWORD
+              value: {{ .Values.mcpAuth.password | quote }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -59,8 +59,8 @@ containerSecurityContext:
 # ------------------------------------------------------------------------------
 service:
   type: ClusterIP
-  port: 8501
-  targetPort: 8501
+  port: 8000
+  targetPort: 8000
 
 # ------------------------------------------------------------------------------
 # Ingress
@@ -93,11 +93,11 @@ resources:
 
 # ------------------------------------------------------------------------------
 # Health probes
-# Streamlit exposes a /_stcore/health endpoint
+# FastAPI exposes /api/health
 # ------------------------------------------------------------------------------
 livenessProbe:
   enabled: true
-  path: /_stcore/health
+  path: /api/health
   initialDelaySeconds: 15
   periodSeconds: 30
   timeoutSeconds: 5
@@ -105,7 +105,7 @@ livenessProbe:
 
 readinessProbe:
   enabled: true
-  path: /_stcore/health
+  path: /api/health
   initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 3
@@ -136,16 +136,25 @@ mcpServerUrl: "http://kuberniq-server.kuberniq-server.svc.cluster.local:8080"
 #   MCP_PASSWORD yourself under the `env:` block below (e.g. from a
 #   SecretProviderClass sync or an ExternalSecret).
 mcpAuth:
-  # K8s Secret name — if set, takes priority over plain username/password below.
-  # Set to "" to use plain values or the env: block instead.
-  secretName: ""                          # e.g. "kuberniq-chat-mcp-auth"
+  # Option 1 — K8s Secret (recommended for production):
+  #   secretName: "kuberniq-chat-mcp-auth"
+  #   usernameKey: "username"
+  #   passwordKey: "password"
+  #   username: ""
+  #   password: ""
+  #
+  # Option 2 — plain values (dev / no Secret available):
+  #   secretName: ""
+  #   username: "admin"
+  #   password: "mypassword"
+  #
+  # Option 3 — external secret provider (e.g. ESO / Vault):
+  #   Set secretName to the synced Secret name, leave username/password empty.
+  secretName: ""          # set to Secret name to use secretKeyRef, else plain value
   usernameKey: "username"
   passwordKey: "password"
-
-  # Plain values — used only when secretName is empty.
-  # Leave blank to supply MCP_USERNAME/MCP_PASSWORD via the env: block.
-  username: ""                            # e.g. "kuberniq-chat"
-  password: ""                            # e.g. "utNoJnJwqJQBG6YAoyzCSnws"
+  username: "admin"       # used only when secretName is empty
+  password: ""            # used only when secretName is empty — set via --set or env:
 
 # Pass OPENAI_API_KEY however suits your setup — plain value, secretKeyRef,
 # Azure Key Vault CSI, or any other valueFrom source.

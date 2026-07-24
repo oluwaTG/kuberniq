@@ -25,6 +25,14 @@ serviceAccount:
   name: ""
 
 # ------------------------------------------------------------------------------
+# RBAC
+# ------------------------------------------------------------------------------
+# Creates a Role + RoleBinding so the pod's service account can manage Secrets
+# in its own namespace (required for the JWT key, user store, refresh tokens).
+rbac:
+  create: true
+
+# ------------------------------------------------------------------------------
 # Pod metadata
 # ------------------------------------------------------------------------------
 podAnnotations: {}

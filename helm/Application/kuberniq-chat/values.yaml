@@ -111,27 +111,33 @@ mcpServerUrl: "http://kuberniq-server.kuberniq-server.svc.cluster.local:8080"
 # ------------------------------------------------------------------------------
 # MCP Server authentication
 # ------------------------------------------------------------------------------
-# The chatbot authenticates to kuberniq-server using a dedicated service account.
-# Create the user on the server first (admin only):
+# Three modes — pick one, leave the others empty/commented:
 #
-#   POST /auth/users
-#   { "username": "kuberniq-chat", "password": "<strong-password>", "role": "viewer" }
-#
-# Then store the credentials in a Kubernetes Secret and reference it below.
-# The chatbot will login once at startup and silently refresh the JWT as needed.
-#
-# Create the secret:
+# MODE 1 — Kubernetes Secret (recommended for production):
 #   kubectl create secret generic kuberniq-chat-mcp-auth \
 #     --from-literal=username=kuberniq-chat \
 #     --from-literal=password=<strong-password> \
-#     -n kuberniq-chat
+#     -n <release-namespace>
+#   Then set:  mcpAuth.secretName: "kuberniq-chat-mcp-auth"
 #
-# If mcpAuth.secretName is empty, the chatbot will attempt unauthenticated access
-# (only works if the server has no auth configured — i.e. local dev without auth).
+# MODE 2 — Plain env values (dev / external secret provider already injected):
+#   Set secretName: "" and fill username + password directly.
+#   Works with tools like Vault Agent, ESO, or Helm --set overrides.
+#
+# MODE 3 — Skip here, supply via mcpAuth.secretName: "" and add MCP_USERNAME /
+#   MCP_PASSWORD yourself under the `env:` block below (e.g. from a
+#   SecretProviderClass sync or an ExternalSecret).
 mcpAuth:
-  secretName: "kuberniq-chat-mcp-auth"   # K8s Secret containing username + password
-  usernameKey: "username"                 # key inside the Secret for the username
-  passwordKey: "password"                 # key inside the Secret for the password
+  # K8s Secret name — if set, takes priority over plain username/password below.
+  # Set to "" to use plain values or the env: block instead.
+  secretName: ""                          # e.g. "kuberniq-chat-mcp-auth"
+  usernameKey: "username"
+  passwordKey: "password"
+
+  # Plain values — used only when secretName is empty.
+  # Leave blank to supply MCP_USERNAME/MCP_PASSWORD via the env: block.
+  username: ""                            # e.g. "kuberniq-chat"
+  password: ""                            # e.g. "utNoJnJwqJQBG6YAoyzCSnws"
 
 # Pass OPENAI_API_KEY however suits your setup — plain value, secretKeyRef,
 # Azure Key Vault CSI, or any other valueFrom source.

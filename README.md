@@ -24,15 +24,12 @@ kuberniq/
 
 ### 🤖 [kuberniq-chat](./kuberniq-chat/README.md) — AI Chatbot
 
-A **Next.js + FastAPI** conversational UI that answers natural language questions about your Kubernetes clusters. The frontend is a dark-themed React app served as a static export from the FastAPI backend — one Docker image ships both. All answers are grounded in **live cluster data** fetched from the MCP server — no hallucinated pod names, no stale state.
+A Streamlit-based conversational UI that answers natural language questions about your Kubernetes clusters. All answers are grounded in **live cluster data** fetched from the MCP server — no hallucinated pod names, no stale state.
 
 **Highlights:**
 - Natural language queries over pods, logs, events, deployments, HPAs, and more
-- 33 models across 8 providers (OpenAI, Anthropic, Google, Groq, Mistral, DeepSeek, xAI, Ollama)
-- Smart namespace resolution — searches all namespaces when one isn't specified
-- Auto-troubleshoot mode that fans out across events, logs, deployment state, and resource quotas
+- Auto-troubleshoot mode that fans out across events, logs, deployment state, and resource quotas in one go
 - YAML manifest analysis for security and misconfiguration review
-- User management with role-based access control (admin / operator / viewer)
 - Helm packaged for easy cluster deployment
 
 ---

@@ -41,8 +41,27 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DEV_MODE   = os.getenv("DEV_MODE",   "false").lower() == "true"
-K8S_NS     = os.getenv("KUBERNIQ_NAMESPACE", "kuberniq")
 DATA_DIR   = Path(os.getenv("KUBERNIQ_DATA_DIR", "./data"))  # dev fallback only
+
+def _detect_namespace() -> str:
+    """
+    Return the namespace to use for K8s Secrets.
+    Priority:
+      1. KUBERNIQ_NAMESPACE env var (explicit override)
+      2. In-cluster: /var/run/secrets/kubernetes.io/serviceaccount/namespace
+      3. Fallback: "kuberniq"
+    """
+    explicit = os.getenv("KUBERNIQ_NAMESPACE", "").strip()
+    if explicit:
+        return explicit
+    ns_file = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+    if ns_file.exists():
+        ns = ns_file.read_text().strip()
+        if ns:
+            return ns
+    return "kuberniq"
+
+K8S_NS = _detect_namespace()
 
 
 def _effective_dev_mode() -> bool:

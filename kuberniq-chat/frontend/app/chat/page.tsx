@@ -48,7 +48,12 @@ export default function ChatPage() {
     const userMsg: ChatMessage = {
       id: nanoid(),
       role: "user",
-      content: message || (yamlContent ? "📎 Attached YAML manifest for review" : ""),
+      // Embed YAML in the message content so it persists in history for follow-ups
+      content: yamlContent
+        ? (message.trim()
+            ? `${message}\n\n\`\`\`yaml\n${yamlContent}\n\`\`\``
+            : `📎 YAML manifest attached for review:\n\n\`\`\`yaml\n${yamlContent}\n\`\`\``)
+        : message,
     };
     const assistantMsg: ChatMessage = {
       id: nanoid(),

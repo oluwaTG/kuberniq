@@ -100,8 +100,11 @@ def classify_intent(question: str) -> list[str]:
         (["networkpolicy", "network policy", "firewall", "egress"], ["networkpolicies"]),
         (["configmap", "configmaps", "configuration"], ["configmaps"]),
         (["secret", "secrets"], ["secrets"]),
-        (["role", "rolebinding", "rbac", "clusterrole", "permission"], ["rbac"]),
-        (["serviceaccount", "serviceaccounts"], ["serviceaccounts"]),
+        (["role", "rolebinding", "rbac", "clusterrole", "permission", "permissions",
+          "access", "who can", "who has access", "can i", "authorized", "authorization",
+          "privilege", "privileges"], ["rbac"]),
+        (["serviceaccount", "serviceaccounts", "service account", "service accounts",
+          "workload identity", "irsa", "pod identity"], ["serviceaccounts"]),
         (["statefulset", "statefulsets"], ["statefulsets"]),
         (["daemonset", "daemonsets"], ["daemonsets"]),
         (["job", "jobs", "batch"], ["jobs"]),
@@ -350,6 +353,16 @@ async def fetch_mcp_context(
         ctx[key] = await mcp_get(path, text=text)
         endpoints_used.append(path.split("?")[0])
 
+    async def _add_safe(key: str, path: str, text: bool = False):
+        """Like _add but swallows errors — for optional/unimplemented MCP endpoints."""
+        try:
+            result = await mcp_get(path, text=text)
+            if result not in (None, [], {}, ""):
+                ctx[key] = result
+                endpoints_used.append(path.split("?")[0])
+        except Exception:
+            pass  # endpoint not implemented or returned 500 — silently skip
+
     # Node metrics
     if "node_metrics" in intents:
         await _add("node_metrics", f"/metrics/nodes{cqs}")
@@ -500,9 +513,10 @@ async def fetch_mcp_context(
                 await _add("pods", f"/namespaces/{ns}/pods{cqs}")
 
     # Workloads
-    async def _ns_or_all(key: str, path_tpl: str):
+    async def _ns_or_all(key: str, path_tpl: str, safe: bool = False):
+        _fetch = _add_safe if safe else _add
         if ns:
-            await _add(key if service else f"{key}s", path_tpl.format(ns=ns, name=service or ""))
+            await _fetch(key if service else f"{key}s", path_tpl.format(ns=ns, name=service or ""))
         else:
             path_no_name = path_tpl.replace("/{name}", "").replace("{name}", "")
             paths = [path_no_name.format(ns=n) for n in all_namespaces]
@@ -513,18 +527,31 @@ async def fetch_mcp_context(
                 endpoints_used.append(f"/namespaces/*/{key}s (all)")
 
     if "deployments"   in intents: await _ns_or_all("deployment",   f"/namespaces/{{ns}}/deployments/{{name}}" if service else f"/namespaces/{{ns}}/deployments")
-    if "services"      in intents: await _ns_or_all("service",      f"/namespaces/{{ns}}/services/{{name}}"    if service else f"/namespaces/{{ns}}/services")
-    if "ingresses"     in intents: await _ns_or_all("ingress",      f"/namespaces/{{ns}}/ingresses/{{name}}"   if service else f"/namespaces/{{ns}}/ingresses")
+    # Use safe=True for services/ingresses when fetching a named resource — service account
+    # names (e.g. "kuberniq") can be mistakenly extracted as service names causing 500s
+    if "services"      in intents: await _ns_or_all("service",      f"/namespaces/{{ns}}/services/{{name}}"    if service else f"/namespaces/{{ns}}/services",   safe=bool(service))
+    if "ingresses"     in intents: await _ns_or_all("ingress",      f"/namespaces/{{ns}}/ingresses/{{name}}"   if service else f"/namespaces/{{ns}}/ingresses",  safe=bool(service))
     if "replicasets"   in intents and ns: await _add("replicasets",  f"/namespaces/{ns}/replicasets{cqs}")
     if "statefulsets"  in intents and ns: await _add("statefulsets", f"/namespaces/{ns}/statefulsets{cqs}")
     if "daemonsets"    in intents and ns: await _add("daemonsets",   f"/namespaces/{ns}/daemonsets{cqs}")
     if "networkpolicies" in intents and ns: await _add("networkpolicies", f"/namespaces/{ns}/networkpolicies{cqs}")
     if "configmaps"    in intents and ns: await _add("configmaps",  f"/namespaces/{ns}/configmaps{cqs}")
     if "secrets"       in intents and ns: await _add("secrets",     f"/namespaces/{ns}/secrets{cqs}")
-    if "serviceaccounts" in intents and ns: await _add("serviceaccounts", f"/namespaces/{ns}/serviceaccounts{cqs}")
-    if "hpa"           in intents and ns: await _add("hpa",         f"/namespaces/{ns}/hpa{cqs}")
-    if "resourcequotas" in intents and ns: await _add("resourcequotas", f"/namespaces/{ns}/resourcequotas{cqs}")
-    if "limitranges"   in intents and ns: await _add("limitranges", f"/namespaces/{ns}/limitranges{cqs}")
+    # serviceaccounts handled below with all-namespace support
+    if "hpa"           in intents:
+        if ns:
+            await _add_safe("hpa", f"/namespaces/{ns}/hpa{cqs}")
+        else:
+            results = await asyncio.gather(
+                *[mcp_get(f"/namespaces/{n}/hpa{cqs}") for n in all_namespaces],
+                return_exceptions=True,
+            )
+            out = {n: r for n, r in zip(all_namespaces, results) if isinstance(r, list) and r}
+            if out:
+                ctx["hpa_by_namespace"] = out
+                endpoints_used.append("/namespaces/*/hpa (all)")
+    if "resourcequotas" in intents and ns: await _add_safe("resourcequotas", f"/namespaces/{ns}/resourcequotas{cqs}")
+    if "limitranges"   in intents and ns: await _add_safe("limitranges",    f"/namespaces/{ns}/limitranges{cqs}")
     if "storageclasses" in intents:        await _add("storageclasses", f"/storageclasses{cqs}")
     if "volumes"       in intents:
         await _add("persistentvolumes", f"/persistentvolumes{cqs}")
@@ -544,6 +571,19 @@ async def fetch_mcp_context(
         if ns:
             await _add("roles", f"/namespaces/{ns}/roles{cqs}")
             await _add("rolebindings", f"/namespaces/{ns}/rolebindings{cqs}")
+    if "serviceaccounts" in intents:
+        if ns:
+            await _add("serviceaccounts", f"/namespaces/{ns}/serviceaccounts{cqs}")
+        else:
+            # Fetch across all namespaces
+            results = await asyncio.gather(
+                *[mcp_get(f"/namespaces/{n}/serviceaccounts{cqs}") for n in all_namespaces],
+                return_exceptions=True,
+            )
+            out = {n: r for n, r in zip(all_namespaces, results) if isinstance(r, list) and r}
+            if out:
+                ctx["serviceaccounts_by_namespace"] = out
+                endpoints_used.append("/namespaces/*/serviceaccounts (all)")
 
     return ctx, endpoints_used
 

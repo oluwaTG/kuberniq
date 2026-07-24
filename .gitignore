@@ -14,6 +14,7 @@ out/
 .env.*
 !.env.example
 venv/
+.venv/
 
 bin/
 dist/
@@ -24,3 +25,11 @@ kuberniq-chat/data/
 **/hashnode-rag.md
 **/auth-oidc-article.md
 **/kuberniq.jpeg
+
+# Kuberniq Chat — dev artifacts not needed in VCS
+kuberniq-chat/fastAPI/
+kuberniq-chat/__pycache__/
+kuberniq-chat/api/__pycache__/
+kuberniq-chat/QA_TEST_PROMPTS.md
+kuberniq-chat/docker-compose.yml
+kuberniq-chat/.venv/

@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg:       #0f1117;
+  --color-surface:  #161b27;
+  --color-surface2: #1e2535;
+  --color-border:   #2a3147;
+  --color-accent:   #4f8ef7;
+  --color-accent2:  #38d9a9;
+  --color-warn:     #f7a94f;
+  --color-danger:   #f76f6f;
+  --color-text:     #e2e8f5;
+  --color-muted:    #7b879e;
+  --font-sans: "Inter", system-ui, sans-serif;
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    height: 100%;
+    margin: 0;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+  /* Markdown rendered inside chat bubbles */
+  .prose-chat {
+    color: var(--color-text);
+    font-size: 0.9rem;
+    line-height: 1.65;
+  }
+  .prose-chat h1,.prose-chat h2,.prose-chat h3 {
+    color: var(--color-text);
+    font-weight: 600;
+    margin: 0.75rem 0 0.35rem;
+  }
+  .prose-chat h1 { font-size: 1.1rem; }
+  .prose-chat h2 { font-size: 1rem; }
+  .prose-chat h3 { font-size: 0.95rem; }
+  .prose-chat p  { margin: 0.4rem 0; }
+  .prose-chat ul,.prose-chat ol { padding-left: 1.25rem; margin: 0.4rem 0; }
+  .prose-chat li { margin: 0.15rem 0; }
+  .prose-chat a  { color: var(--color-accent); text-decoration: underline; }
+  .prose-chat strong { color: var(--color-text); font-weight: 600; }
+  .prose-chat code {
+    background: var(--color-surface2);
+    color: var(--color-accent2);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    font-size: 0.82em;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+  }
+  .prose-chat pre {
+    background: #0a0d14;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 0.6rem 0;
+  }
+  .prose-chat pre code {
+    background: transparent;
+    color: var(--color-text);
+    padding: 0;
+    font-size: 0.82rem;
+  }
+  /* Markdown tables */
+  .prose-chat table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    margin: 0.6rem 0;
+  }
+  .prose-chat th {
+    background: var(--color-surface2);
+    color: var(--color-muted);
+    padding: 0.4rem 0.75rem;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .prose-chat td {
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .prose-chat tr:last-child td { border-bottom: none; }
+  .prose-chat tr:hover td { background: var(--color-surface2); }
+
+  /* Syntax highlight theme overrides (highlight.js github-dark) */
+  .hljs { background: transparent !important; color: var(--color-text) !important; }
+}

@@ -16,6 +16,31 @@ builder.Logging.AddConsole();
 
 var app = builder.Build();
 
+// ── Global exception handler ─────────────────────────────────────────────────
+// Translates unhandled K8s API exceptions into proper HTTP status codes so
+// callers get 404 / 409 / 403 instead of a generic 500.
+app.Use(async (ctx, next) =>
+{
+    try
+    {
+        await next(ctx);
+    }
+    catch (k8s.Autorest.HttpOperationException kEx)
+    {
+        var status = (int)kEx.Response.StatusCode;
+        ctx.Response.StatusCode = status;
+        var msg = status == 404
+            ? "Resource not found."
+            : kEx.Response.ReasonPhrase ?? kEx.Message;
+        await ctx.Response.WriteAsJsonAsync(new { error = msg, detail = kEx.Response.Content });
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        ctx.Response.StatusCode = 500;
+        await ctx.Response.WriteAsJsonAsync(new { error = ex.Message });
+    }
+});
+
 // ── Cluster Registry ─────────────────────────────────────────────────────────
 // "local"  = the in-cluster SA or default kubeconfig context (always present).
 // Any name = a remote cluster registered via POST /clusters, persisted as a

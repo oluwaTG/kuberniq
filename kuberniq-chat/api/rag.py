@@ -350,6 +350,16 @@ async def fetch_mcp_context(
         ctx[key] = await mcp_get(path, text=text)
         endpoints_used.append(path.split("?")[0])
 
+    async def _add_safe(key: str, path: str, text: bool = False):
+        """Like _add but swallows errors — for optional/unimplemented MCP endpoints."""
+        try:
+            result = await mcp_get(path, text=text)
+            if result not in (None, [], {}, ""):
+                ctx[key] = result
+                endpoints_used.append(path.split("?")[0])
+        except Exception:
+            pass  # endpoint not implemented or returned 500 — silently skip
+
     # Node metrics
     if "node_metrics" in intents:
         await _add("node_metrics", f"/metrics/nodes{cqs}")
@@ -522,9 +532,20 @@ async def fetch_mcp_context(
     if "configmaps"    in intents and ns: await _add("configmaps",  f"/namespaces/{ns}/configmaps{cqs}")
     if "secrets"       in intents and ns: await _add("secrets",     f"/namespaces/{ns}/secrets{cqs}")
     if "serviceaccounts" in intents and ns: await _add("serviceaccounts", f"/namespaces/{ns}/serviceaccounts{cqs}")
-    if "hpa"           in intents and ns: await _add("hpa",         f"/namespaces/{ns}/hpa{cqs}")
-    if "resourcequotas" in intents and ns: await _add("resourcequotas", f"/namespaces/{ns}/resourcequotas{cqs}")
-    if "limitranges"   in intents and ns: await _add("limitranges", f"/namespaces/{ns}/limitranges{cqs}")
+    if "hpa"           in intents:
+        if ns:
+            await _add_safe("hpa", f"/namespaces/{ns}/hpa{cqs}")
+        else:
+            results = await asyncio.gather(
+                *[mcp_get(f"/namespaces/{n}/hpa{cqs}") for n in all_namespaces],
+                return_exceptions=True,
+            )
+            out = {n: r for n, r in zip(all_namespaces, results) if isinstance(r, list) and r}
+            if out:
+                ctx["hpa_by_namespace"] = out
+                endpoints_used.append("/namespaces/*/hpa (all)")
+    if "resourcequotas" in intents and ns: await _add_safe("resourcequotas", f"/namespaces/{ns}/resourcequotas{cqs}")
+    if "limitranges"   in intents and ns: await _add_safe("limitranges",    f"/namespaces/{ns}/limitranges{cqs}")
     if "storageclasses" in intents:        await _add("storageclasses", f"/storageclasses{cqs}")
     if "volumes"       in intents:
         await _add("persistentvolumes", f"/persistentvolumes{cqs}")

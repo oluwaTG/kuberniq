@@ -96,7 +96,7 @@ sealed class LoginCommand : AsyncCommand<LoginSettings>
         // ── Health check ───────────────────────────────────────────────────────
         try
         {
-            using var http = new HttpClient();
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
             var resp = await http.GetAsync($"{url}/health");
             resp.EnsureSuccessStatusCode();
         }
@@ -106,8 +106,44 @@ sealed class LoginCommand : AsyncCommand<LoginSettings>
             return 1;
         }
 
-        KuberniqConfigManager.Save(new KuberniqConfig(url));
-        AnsiConsole.MarkupLine($"[green]✓[/] Authenticated. Config saved to [grey]~/.kuberniq/config.json[/].");
+        // ── Prompt for credentials ─────────────────────────────────────────────
+        var username = s.Username;
+        if (string.IsNullOrWhiteSpace(username))
+            username = AnsiConsole.Ask<string>("Username:");
+
+        var password = s.Password;
+        if (string.IsNullOrWhiteSpace(password))
+            password = AnsiConsole.Prompt(new TextPrompt<string>("Password:").Secret());
+
+        // ── POST /auth/login ───────────────────────────────────────────────────
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var loginResp = await http.PostAsJsonAsync(
+                $"{url}/auth/login",
+                new { username, password });
+
+            if (loginResp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                AnsiConsole.MarkupLine("[red]✗[/] Invalid username or password.");
+                return 1;
+            }
+
+            loginResp.EnsureSuccessStatusCode();
+            var data         = await loginResp.Content.ReadFromJsonAsync<JsonElement>();
+            var accessToken  = data.GetProperty("accessToken").GetString();
+            var refreshToken = data.GetProperty("refreshToken").GetString();
+
+            var cfg = new KuberniqConfig(url, AccessToken: accessToken, RefreshToken: refreshToken);
+            KuberniqConfigManager.Save(cfg);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]✗[/] Login failed: {ex.Message}");
+            return 1;
+        }
+
+        AnsiConsole.MarkupLine($"[green]✓[/] Authenticated as [cyan]{username}[/]. Config saved to [grey]~/.kuberniq/config.json[/].");
         AnsiConsole.MarkupLine("  Run [cyan]kuberniq cluster add <name>[/] to register your first cluster.");
         return 0;
     }

@@ -323,11 +323,8 @@ async def fetch_mcp_context(
     if ns is None and pod is None and service is None:
         ns, pod, service, container = extract_entities_regex(question, all_namespaces)
 
-    if ns and ns not in all_namespaces:
-        ctx["namespace_denied"] = f"[PERMISSION_DENIED] You do not have access to namespace '{ns}'."
-        ns = None
-
-    # Multi-cluster routing
+    # Multi-cluster routing — must happen BEFORE namespace validation so we can
+    # check ns against the remote cluster's namespaces, not the local ones.
     cqs = f"?cluster={target_cluster}" if target_cluster else ""
     if target_cluster:
         ctx["target_cluster"] = target_cluster
@@ -338,6 +335,23 @@ async def fetch_mcp_context(
             endpoints_used.append(f"/namespaces{cqs}")
         ctx["cluster_info"] = await mcp_get(f"/cluster/info{cqs}")
         endpoints_used.append(f"/cluster/info{cqs}")
+        # Re-run entity extraction with the remote namespace list so ns matches correctly
+        if ns is None or ns not in all_namespaces:
+            ns2, pod2, svc2, con2, _ = await extract_entities_llm(
+                question, all_namespaces, chat_history, known_clusters=registered_clusters
+            )
+            if ns2: ns = ns2
+            if pod2: pod = pod2
+            if svc2: service = svc2
+            if con2: container = con2
+        if ns is None:
+            ns_retry, _, _, _ = extract_entities_regex(question, all_namespaces)
+            if ns_retry: ns = ns_retry
+    else:
+        # Local cluster — validate ns against local namespaces
+        if ns and ns not in all_namespaces:
+            ctx["namespace_denied"] = f"[PERMISSION_DENIED] You do not have access to namespace '{ns}'."
+            ns = None
 
     # Time range for log queries
     log_since: str | None = None

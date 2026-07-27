@@ -406,9 +406,9 @@ public static class ClusterRegistrar
                     app.kubernetes.io/managed-by: kuberniq
                 rules:
                 - apiGroups: [""]
-                  resources: ["namespaces","pods","services","endpoints","events","configmaps",
+                  resources: ["namespaces","pods","pods/log","pods/exec","services","endpoints","events","configmaps",
                                "persistentvolumes","persistentvolumeclaims","nodes",
-                               "resourcequotas","serviceaccounts","replicationcontrollers"]
+                               "resourcequotas","limitranges","serviceaccounts","replicationcontrollers"]
                   verbs: ["get","list","watch"]
                 - apiGroups: ["apps"]
                   resources: ["deployments","replicasets","statefulsets","daemonsets"]
@@ -417,7 +417,10 @@ public static class ClusterRegistrar
                   resources: ["jobs","cronjobs"]
                   verbs: ["get","list","watch"]
                 - apiGroups: ["networking.k8s.io"]
-                  resources: ["ingresses","networkpolicies"]
+                  resources: ["ingresses","ingressclasses","networkpolicies"]
+                  verbs: ["get","list","watch"]
+                - apiGroups: ["rbac.authorization.k8s.io"]
+                  resources: ["roles","rolebindings","clusterroles","clusterrolebindings"]
                   verbs: ["get","list","watch"]
                 - apiGroups: ["autoscaling"]
                   resources: ["horizontalpodautoscalers"]

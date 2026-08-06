@@ -1,0 +1,43 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-build   # skipped when using prebuilt image
+    # For local dev, run the API directly without Docker:
+    #   cd api && uvicorn main:app --reload --port 8000
+    image: kuberniq-chat-dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - kuberniq-data:/data
+    environment:
+      - KUBERNIQ_DATA_DIR=/data
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:5165}
+      - MCP_USERNAME=${MCP_USERNAME:-admin}
+      - MCP_PASSWORD=${MCP_PASSWORD}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
+      - FAST_LLM_MODEL=${FAST_LLM_MODEL:-gpt-4o-mini}
+      # Set whichever provider key(s) you use:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - CORS_ORIGINS=http://localhost:3000
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api
+
+volumes:
+  kuberniq-data:

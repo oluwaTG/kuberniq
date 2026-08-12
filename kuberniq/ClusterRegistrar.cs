@@ -407,7 +407,7 @@ public static class ClusterRegistrar
                 rules:
                 - apiGroups: [""]
                   resources: ["namespaces","pods","pods/log","pods/exec","services","endpoints","events","configmaps",
-                               "persistentvolumes","persistentvolumeclaims","nodes",
+                               "secrets","persistentvolumes","persistentvolumeclaims","nodes",
                                "resourcequotas","limitranges","serviceaccounts","replicationcontrollers"]
                   verbs: ["get","list","watch"]
                 - apiGroups: ["apps"]

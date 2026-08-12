@@ -205,15 +205,26 @@ app.Use(async (ctx, next) =>
 
     if (!isPublic)
     {
+        // Accept the JWT from either the Authorization header (API/JS clients)
+        // or the mcp_access_token cookie (browser navigation / address bar).
         var authHeader = ctx.Request.Headers.Authorization.FirstOrDefault();
-        if (authHeader is null || !authHeader.StartsWith("Bearer "))
+        string? token = null;
+        if (authHeader is not null && authHeader.StartsWith("Bearer "))
+        {
+            token = authHeader["Bearer ".Length..].Trim();
+        }
+        else if (ctx.Request.Cookies.TryGetValue("mcp_access_token", out var cookieToken)
+                 && !string.IsNullOrWhiteSpace(cookieToken))
+        {
+            token = cookieToken;
+        }
+
+        if (token is null)
         {
             ctx.Response.StatusCode = 401;
             await ctx.Response.WriteAsJsonAsync(new { error = "Authentication required. Please log in via POST /auth/login." });
             return;
         }
-
-        var token     = authHeader["Bearer ".Length..].Trim();
         var principal = await authService.ValidateAccessTokenAsync(token);
 
         if (principal is null && oidcConfig.Enabled)
@@ -293,7 +304,7 @@ app.MapGet("/health", () => Results.Ok(new {
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 
 // POST /auth/login — returns access + refresh tokens
-app.MapPost("/auth/login", async (LoginRequest req) =>
+app.MapPost("/auth/login", async (HttpContext ctx, LoginRequest req) =>
 {
     if (string.IsNullOrWhiteSpace(req.Username) || string.IsNullOrWhiteSpace(req.Password))
         return Results.BadRequest(new { error = "Username and password are required." });
@@ -302,6 +313,17 @@ app.MapPost("/auth/login", async (LoginRequest req) =>
     if (!valid) return Results.Unauthorized();
 
     var tokens = await authService.IssueTokensAsync(username, role);
+
+    // Also set an HttpOnly cookie so browser navigation (address bar) works
+    // without needing a JS-injected Authorization header.
+    ctx.Response.Cookies.Append("mcp_access_token", tokens.AccessToken, new CookieOptions
+    {
+        HttpOnly = true,
+        Secure   = false,   // set to true when serving over HTTPS
+        SameSite = SameSiteMode.Lax,
+        Path     = "/",
+        MaxAge   = TimeSpan.FromMinutes(60),
+    });
     return Results.Ok(tokens);
 });
 

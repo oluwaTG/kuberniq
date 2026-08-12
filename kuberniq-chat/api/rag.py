@@ -149,24 +149,37 @@ async def extract_entities_llm(
 ) -> tuple:
     ns_hint      = ", ".join(known_namespaces[:40]) if known_namespaces else "none"
     cluster_hint = ", ".join(known_clusters) if known_clusters else "none"
+
+    # Build a richer history snippet that includes the last resolved context so the
+    # LLM can carry it forward when the user says "that pod", "the same namespace", etc.
     history_snippet = ""
     if chat_history:
-        recent = chat_history[-6:]
+        recent = chat_history[-8:]
         parts = [
-            f"{'User' if m.get('role') == 'user' else 'Assistant'}: {str(m.get('content',''))[:400]}"
+            f"{'User' if m.get('role') == 'user' else 'Assistant'}: {str(m.get('content',''))[:600]}"
             for m in recent if m.get("role") in ("user", "assistant")
         ]
         if parts:
-            history_snippet = "\n\nRecent conversation:\n" + "\n".join(parts)
+            history_snippet = "\n\nConversation so far:\n" + "\n".join(parts)
 
     prompt = (
-        f"Extract Kubernetes entities. Known namespaces: [{ns_hint}]. "
-        f"Known clusters: [{cluster_hint}].{history_snippet}\n\n"
-        f"Question: {question}\n\n"
+        f"Extract Kubernetes entities for the LATEST user question, resolving any references "
+        f"(\"that pod\", \"it\", \"the same namespace\", \"those logs\", etc.) against the conversation history.\n\n"
+        f"Known namespaces: [{ns_hint}].\n"
+        f"Known clusters: [{cluster_hint}]."
+        f"{history_snippet}\n\n"
+        f"Latest question: {question}\n\n"
         f'Reply with a JSON object only: {{"namespace":<str|null>,"pod":<str|null>,"service":<str|null>,"container":<str|null>,"cluster":<str|null>}}\n'
-        f"Rules: namespace must match a known namespace exactly (case-insensitive) or null; "
-        f"cluster must match a known cluster or null; pod only if full name with hash; "
-        f"service is the app/deployment name; use null for anything not mentioned."
+        f"Rules:\n"
+        f"- namespace: must match a known namespace exactly (case-insensitive); "
+        f"  if the question references a namespace from history (e.g. 'the same namespace', 'that namespace'), resolve it; else null.\n"
+        f"- cluster: must match a known cluster or null; carry forward from history if referenced.\n"
+        f"- pod: full pod name if mentioned or clearly referenced from history (e.g. 'that pod', 'its logs'); else null.\n"
+        f"- service: app/deployment/service name if mentioned or referenced; else null.\n"
+        f"- container: only if explicitly named; else null.\n"
+        f"IMPORTANT: if the latest question is a follow-up with pronouns or vague references "
+        f"(\"tell me more\", \"what about it\", \"give me details\", \"show logs\"), "
+        f"carry forward namespace/pod/service/cluster from the most recent context in history."
     )
     try:
         r = await litellm.acompletion(
@@ -320,7 +333,9 @@ async def fetch_mcp_context(
     ns, pod, service, container, target_cluster = await extract_entities_llm(
         question, all_namespaces, chat_history, known_clusters=registered_clusters
     )
-    if ns is None and pod is None and service is None:
+    # Only fall back to regex if the LLM returned nothing at all — avoids
+    # overwriting history-resolved context with regex nulls.
+    if ns is None and pod is None and service is None and target_cluster is None:
         ns, pod, service, container = extract_entities_regex(question, all_namespaces)
 
     # Multi-cluster routing — must happen BEFORE namespace validation so we can
@@ -449,7 +464,7 @@ async def fetch_mcp_context(
             path = (
                 f"/namespaces/{ns_}/pods/{pod_}/containers/{container_}/logs{qs}{ext}"
                 if container_ else
-                f"/namespaces/{ns_}/pods/{pod_}/logs{qs}{ext}"
+                f"/namespaces/{ns_}/pods/{pod_}/logs/all{qs}{ext}"
             )
             await _add(f"logs_{pod_}", path, text=True)
 

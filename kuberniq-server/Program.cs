@@ -836,23 +836,41 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs", async (
     string? sinceTime   = null,
     int?    sinceSeconds = null) =>
 {
-    var computedSince = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
-    bool   useTimestamps = computedSince.HasValue;
-    int?   effectiveTail = useTimestamps ? 5000 : tail;
-
-    using var logStream = await WithK8sRetryAsync(c =>
-        c.ReadNamespacedPodLogAsync(pod, ns,
-            container:    container,
-            tailLines:    effectiveTail,
-            sinceSeconds: computedSince,
-            timestamps:   useTimestamps ? true : null));
-    string logText = string.Empty;
-    if (logStream != null)
+    try
     {
-        using var reader = new StreamReader(logStream);
-        logText = await reader.ReadToEndAsync();
+        var computedSince = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
+        bool   useTimestamps = computedSince.HasValue;
+        int?   effectiveTail = useTimestamps ? 5000 : tail;
+
+        using var logStream = await WithK8sRetryAsync(c =>
+            c.ReadNamespacedPodLogAsync(pod, ns,
+                container:    container,
+                tailLines:    effectiveTail,
+                sinceSeconds: computedSince,
+                timestamps:   useTimestamps ? true : null));
+        string logText = string.Empty;
+        if (logStream != null)
+        {
+            using var reader = new StreamReader(logStream);
+            logText = await reader.ReadToEndAsync();
+        }
+        return Results.Text(logText, "text/plain");
     }
-    return Results.Text(logText, "text/plain");
+    catch (k8s.Autorest.HttpOperationException ex)
+    {
+        var body = ex.Response?.Content ?? ex.Message;
+        return Results.Problem(
+            detail: body,
+            statusCode: (int)(ex.Response?.StatusCode ?? System.Net.HttpStatusCode.InternalServerError),
+            title: $"Kubernetes API error fetching logs for pod '{pod}' in '{ns}'");
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            detail: ex.Message,
+            statusCode: 500,
+            title: $"Failed to fetch logs for pod '{pod}' in '{ns}'");
+    }
 });
 
 // Fetch logs from ALL containers in a pod, returned as a JSON map { containerName -> logText }
@@ -866,7 +884,24 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (
     bool useTimestamps = computedSince.HasValue;
     int? effectiveTail = useTimestamps ? 5000 : tail;
 
-    var podObj = await WithK8sRetryAsync(c => c.ReadNamespacedPodAsync(pod, ns));
+    k8s.Models.V1Pod podObj;
+    try
+    {
+        podObj = await WithK8sRetryAsync(c => c.ReadNamespacedPodAsync(pod, ns));
+    }
+    catch (k8s.Autorest.HttpOperationException ex)
+    {
+        return Results.Problem(
+            detail: ex.Response?.Content ?? ex.Message,
+            statusCode: (int)(ex.Response?.StatusCode ?? System.Net.HttpStatusCode.InternalServerError),
+            title: $"Kubernetes API error reading pod '{pod}' in '{ns}'");
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(detail: ex.Message, statusCode: 500,
+            title: $"Failed to read pod '{pod}' in '{ns}'");
+    }
+
     var containerNames = podObj.Spec?.Containers?.Select(c => c.Name).ToList() ?? [];
     var result = new Dictionary<string, string>();
     foreach (var cname in containerNames)

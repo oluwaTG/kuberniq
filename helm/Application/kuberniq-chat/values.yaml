@@ -96,17 +96,17 @@ resources:
 # FastAPI exposes /api/health
 # ------------------------------------------------------------------------------
 livenessProbe:
-  enabled: false
+  enabled: true
   path: /api/health
-  initialDelaySeconds: 15
+  initialDelaySeconds: 30
   periodSeconds: 30
   timeoutSeconds: 5
   failureThreshold: 3
 
 readinessProbe:
-  enabled: false
+  enabled: true
   path: /api/health
-  initialDelaySeconds: 10
+  initialDelaySeconds: 15
   periodSeconds: 10
   timeoutSeconds: 3
   failureThreshold: 3

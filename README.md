@@ -24,7 +24,7 @@ kuberniq/
 
 ### 🤖 [kuberniq-chat](./kuberniq-chat/README.md) — AI Chatbot
 
-A Streamlit-based conversational UI that answers natural language questions about your Kubernetes clusters. All answers are grounded in **live cluster data** fetched from the MCP server — no hallucinated pod names, no stale state.
+A Next.js and FastAPI conversational UI that answers natural language questions about your Kubernetes clusters. The retrieval pipeline supplies **live cluster data** from the cluster API to the model; answers still require verification.
 
 **Highlights:**
 - Natural language queries over pods, logs, events, deployments, HPAs, and more
@@ -82,14 +82,23 @@ helm upgrade --install kuberniq-server helm/Application/kuberniq-server \
 ### 2. Deploy the Chatbot
 
 ```bash
+kubectl create namespace kuberniq-chat
 kubectl create secret generic kuberniq-chat-secrets \
   --from-literal=OPENAI_API_KEY=sk-... \
+  -n kuberniq-chat
+
+# Use credentials for an existing account on the Kuberniq server.
+kubectl create secret generic kuberniq-chat-mcp-auth \
+  --from-literal=username=admin \
+  --from-literal=password='<server-password>' \
   -n kuberniq-chat
 
 helm upgrade --install kuberniq-chat helm/Application/kuberniq-chat \
   --namespace kuberniq-chat \
   --create-namespace \
-  --set mcpServerUrl=http://kuberniq-server.kuberniq-server.svc.cluster.local:8080
+  --set mcpServerUrl=http://kuberniq-server.kuberniq-server.svc.cluster.local:8080 \
+  --set mcpAuth.secretName=kuberniq-chat-mcp-auth \
+  --set-json 'env=[{"name":"OPENAI_API_KEY","valueFrom":{"secretKeyRef":{"name":"kuberniq-chat-secrets","key":"OPENAI_API_KEY"}}}]'
 ```
 
 ### 3. Register Additional Clusters (optional)
@@ -98,7 +107,7 @@ helm upgrade --install kuberniq-chat helm/Application/kuberniq-chat \
 # Install the CLI
 curl -fsSL https://raw.githubusercontent.com/oluwaTG/kuberniq/main/kuberniq/install.sh | bash
 
-# Point it at your server and register a cluster
+# Log in with a server admin account, then register a cluster
 kuberniq login http://your-kuberniq-server
 kuberniq cluster add prod --context prod-aks
 ```

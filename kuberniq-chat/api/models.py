@@ -1,6 +1,6 @@
 """Pydantic request / response models for the Kuberniq Chat API."""
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Literal
 from pydantic import BaseModel
 
 
@@ -21,7 +21,7 @@ class LoginResponse(BaseModel):
 
 
 class ChatMessage(BaseModel):
-    role: str          # "user" | "assistant"
+    role: Literal["user", "assistant"]
     content: str
 
 

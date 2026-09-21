@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import threading
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -44,23 +46,30 @@ MCP_TIMEOUT  = float(os.getenv("MCP_TIMEOUT", "5"))   # kept short so threads cl
 
 # Shared token cache
 _tokens: dict[str, str | None] = {"access": None, "refresh": None}
+_TOKEN_LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()
 
 # ── Short-lived cache for the 3 "always-fetched" MCP calls ───────────────────
 # Namespaces, cluster list, and cluster info rarely change within a session.
 # Caching them for 60s means follow-up questions skip the slow initial fetch.
 _CACHE_TTL = 60.0
-_cache: dict[str, tuple[float, Any]] = {}   # path → (expires_at, value)
+_cache: dict[tuple[str, bool], tuple[float, Any]] = {}   # path → (expires_at, value)
 
 
 def _cached_get(path: str, text: bool = False) -> Any | None:
-    entry = _cache.get(path)
-    if entry and time.time() < entry[0]:
-        return entry[1]
+    with _CACHE_LOCK:
+        entry = _cache.get((path, text))
+        if entry and time.monotonic() < entry[0]:
+            return entry[1]
+        _cache.pop((path, text), None)
     return None
 
 
-def _cache_set(path: str, value: Any) -> None:
-    _cache[path] = (time.time() + _CACHE_TTL, value)
+def _cache_set(path: str, value: Any, text: bool = False) -> None:
+    with _CACHE_LOCK:
+        if len(_cache) >= 256:
+            _cache.clear()
+        _cache[(path, text)] = (time.monotonic() + _CACHE_TTL, value)
 
 
 def _login() -> bool:
@@ -108,12 +117,14 @@ def _auth_headers() -> dict:
 def _mcp_get_sync(path: str, text: bool = False) -> Any:
     """Synchronous MCP GET with auto login/refresh on 401 and short-lived cache."""
     # Return cached value for stable endpoints (namespaces, clusters, cluster/info)
-    cached = _cached_get(path)
+    cached = _cached_get(path, text)
     if cached is not None:
         return cached
 
-    if _tokens["access"] is None:
-        _login()
+    with _TOKEN_LOCK:
+        if _tokens["access"] is None:
+            _login()
+        sent_token = _tokens["access"]
 
     def _do():
         return _requests.get(
@@ -123,14 +134,16 @@ def _mcp_get_sync(path: str, text: bool = False) -> Any:
     try:
         r = _do()
         if r.status_code == 401:
-            if not (_refresh() or _login()):
-                return {"error": "Authentication failed"}
+            with _TOKEN_LOCK:
+                # Another concurrent request may already have rotated the token.
+                if _tokens["access"] == sent_token and not (_refresh() or _login()):
+                    return {"error": "Authentication failed"}
             r = _do()
         r.raise_for_status()
         result = r.text if text else r.json()
         # Cache stable read-only endpoints
-        if path in ("/namespaces", "/clusters", "/cluster/info"):
-            _cache_set(path, result)
+        if urlsplit(path).path in ("/namespaces", "/clusters", "/cluster/info"):
+            _cache_set(path, result, text)
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -138,9 +151,17 @@ def _mcp_get_sync(path: str, text: bool = False) -> Any:
 
 async def mcp_get(path: str, text: bool = False) -> Any:
     """Async wrapper — semaphore-bounded so gather() can't exhaust the thread pool."""
-    async with _get_sem():
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(_MCP_EXECUTOR, _mcp_get_sync, path, text)
+    semaphore = _get_sem()
+    await semaphore.acquire()
+    try:
+        future = asyncio.get_running_loop().run_in_executor(_MCP_EXECUTOR, _mcp_get_sync, path, text)
+    except BaseException:
+        semaphore.release()
+        raise
+    # Cancelling an await cannot stop requests in a worker thread. Hold the slot
+    # until the actual operation finishes, preventing cancelled queries piling up.
+    future.add_done_callback(lambda _: semaphore.release())
+    return await asyncio.shield(future)
 
 
 async def get_all_namespaces() -> list[str]:

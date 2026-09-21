@@ -616,7 +616,7 @@ app.MapPost("/clusters", async (RegisterClusterRequest req) =>
 
     return Results.Ok(new { registered = req.Name, server = req.Server,
                             hint = $"Append ?cluster={req.Name} to any endpoint." });
-});
+}).AddEndpointFilter<AdminOnlyFilter>();
 
 // Remove a registered remote cluster
 app.MapDelete("/clusters/{name}", async (string name) =>
@@ -636,7 +636,7 @@ app.MapDelete("/clusters/{name}", async (string name) =>
     catch { /* Secret may not exist */ }
 
     return Results.Ok(new { removed = name });
-});
+}).AddEndpointFilter<AdminOnlyFilter>();
 
 // DTO for POST /clusters
 // record RegisterClusterRequest(string Name, string Server, string? CaData, string Token);
@@ -856,20 +856,21 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs", async (
     string? container   = null,
     int?    tail        = 200,
     string? sinceTime   = null,
-    int?    sinceSeconds = null) =>
+    int?    sinceSeconds = null,
+    bool    previous     = false) =>
 {
     try
     {
         var computedSince = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
-        bool   useTimestamps = computedSince.HasValue;
-        int?   effectiveTail = useTimestamps ? 5000 : tail;
+        int?   effectiveTail = Math.Clamp(tail ?? 200, 1, 5000);
 
         using var logStream = await WithK8sRetryAsync(c =>
             c.ReadNamespacedPodLogAsync(pod, ns,
                 container:    container,
                 tailLines:    effectiveTail,
                 sinceSeconds: computedSince,
-                timestamps:   useTimestamps ? true : null));
+                timestamps:   true,
+                previous:     previous));
         string logText = string.Empty;
         if (logStream != null)
         {
@@ -900,11 +901,11 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (
     string ns, string pod,
     int?    tail         = 200,
     string? sinceTime    = null,
-    int?    sinceSeconds = null) =>
+    int?    sinceSeconds = null,
+    bool    previous     = false) =>
 {
     var computedSince  = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
-    bool useTimestamps = computedSince.HasValue;
-    int? effectiveTail = useTimestamps ? 5000 : tail;
+    int? effectiveTail = Math.Clamp(tail ?? 200, 1, 5000);
 
     k8s.Models.V1Pod podObj;
     try
@@ -924,7 +925,8 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (
             title: $"Failed to read pod '{pod}' in '{ns}'");
     }
 
-    var containerNames = podObj.Spec?.Containers?.Select(c => c.Name).ToList() ?? [];
+    var containerNames = (podObj.Spec?.Containers?.Select(c => c.Name) ?? [])
+        .Concat(podObj.Spec?.InitContainers?.Select(c => c.Name) ?? []).Distinct().ToList();
     var result = new Dictionary<string, string>();
     foreach (var cname in containerNames)
     {
@@ -935,7 +937,8 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/logs/all", async (
                     container:    cname,
                     tailLines:    effectiveTail,
                     sinceSeconds: computedSince,
-                    timestamps:   useTimestamps ? true : null));
+                    timestamps:   true,
+                    previous:     previous));
             if (logStream != null)
             {
                 using var reader = new StreamReader(logStream);
@@ -955,20 +958,21 @@ app.MapGet("/namespaces/{ns}/pods/{pod}/containers/{container}/logs", async (
     string ns, string pod, string container,
     int?    tail         = 200,
     string? sinceTime    = null,
-    int?    sinceSeconds = null) =>
+    int?    sinceSeconds = null,
+    bool    previous     = false) =>
 {
     try
     {
         var computedSince  = sinceSeconds ?? SinceTimeToSeconds(sinceTime);
-        bool useTimestamps = computedSince.HasValue;
-        int? effectiveTail = useTimestamps ? 5000 : tail;
+        int? effectiveTail = Math.Clamp(tail ?? 200, 1, 5000);
 
         using var logStream = await WithK8sRetryAsync(c =>
             c.ReadNamespacedPodLogAsync(pod, ns,
                 container:    container,
                 tailLines:    effectiveTail,
                 sinceSeconds: computedSince,
-                timestamps:   useTimestamps ? true : null));
+                timestamps:   true,
+                previous:     previous));
         string logText = string.Empty;
         if (logStream != null)
         {

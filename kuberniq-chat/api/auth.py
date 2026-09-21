@@ -387,13 +387,21 @@ async def refresh(refresh_token: str) -> tuple[bool, dict, str]:
 
     # Rotate — delete old, issue new
     await _k8s(api.delete_namespaced_secret, secret_obj.metadata.name, K8S_NS)
-    import json as _json
-    raw_ns = data.get("allowed_namespaces", "[]")
+    # Reload the user so namespace assignments and role changes take effect.
     try:
-        allowed_ns = _json.loads(raw_ns) if isinstance(raw_ns, str) else (raw_ns or [])
-    except Exception:
+        user_secret = await _k8s(api.read_namespaced_secret, _user_secret_name(data["username"]), K8S_NS)
+    except _kc.exceptions.ApiException as exc:
+        if exc.status == 404:
+            return False, {}, "User no longer exists. Please log in again."
+        raise
+    user = _secret_data(user_secret)
+    try:
+        allowed_ns = json.loads(user.get("allowed_namespaces", "[]"))
+    except (TypeError, ValueError):
         allowed_ns = []
-    tokens = await _issue_tokens(data["username"], data.get("role", "viewer"), allowed_ns)
+    if not isinstance(allowed_ns, list):
+        allowed_ns = []
+    tokens = await _issue_tokens(data["username"], user.get("role", "viewer"), allowed_ns)
     return True, tokens, ""
 
 
@@ -550,23 +558,6 @@ async def update_user(
     )
     await _k8s(api.patch_namespaced_secret, secret_name, K8S_NS, patch_body)
     return True, ""
-    try:
-        await _k8s(api.delete_namespaced_secret, _user_secret_name(username), K8S_NS)
-        # Clean up refresh tokens for this user
-        all_rt = await _k8s(
-            api.list_namespaced_secret, K8S_NS,
-            label_selector=f"kuberniq.io/type=refresh-token,kuberniq.io/username={username}",
-        )
-        for s in all_rt.items:
-            try:
-                await _k8s(api.delete_namespaced_secret, s.metadata.name, K8S_NS)
-            except Exception:
-                pass
-        return True, ""
-    except _kc.exceptions.ApiException as e:
-        if e.status == 404:
-            return False, f"User '{username}' not found."
-        raise
 
 
 async def list_users() -> list[dict]:
@@ -630,16 +621,8 @@ def validate_access_token(token: str) -> Optional[dict]:
     Sync — uses a cached signing key so no I/O on the hot path.
     """
     if not _cached_signing_key:
-        # Key not loaded yet — decode without verification as a last resort
-        try:
-            payload = _jwt.decode(
-                token,
-                options={"verify_signature": False, "verify_exp": True},
-                algorithms=[JWT_ALGORITHM],
-            )
-            return _extract_claims(payload)
-        except Exception:
-            return None
+        # Never accept claims until the signing key is available.
+        return None
     try:
         payload = _jwt.decode(
             token, _cached_signing_key,
@@ -723,7 +706,12 @@ async def _dev_refresh(refresh_token: str) -> tuple[bool, dict, str]:
         )
         if payload.get("type") != "refresh":
             return False, {}, "Invalid refresh token."
-        return True, await _issue_tokens(payload["sub"], payload.get("role", "viewer")), ""
+        user = _dev_load().get(payload["sub"])
+        if user is None:
+            return False, {}, "User no longer exists. Please log in again."
+        return True, await _issue_tokens(
+            payload["sub"], user.get("role", "viewer"), user.get("allowed_namespaces", [])
+        ), ""
     except Exception:
         return False, {}, "Refresh token is invalid or expired."
 

@@ -3,6 +3,7 @@ terragrunt-vscode/
 
 # Node outputs
 node_modules/
+*.tsbuildinfo
 out/
 
 # Editor
@@ -33,3 +34,6 @@ kuberniq-chat/api/__pycache__/
 kuberniq-chat/QA_TEST_PROMPTS.md
 kuberniq-chat/docker-compose.yml
 kuberniq-chat/.venv/
+
+# Python test bytecode
+**/__pycache__/

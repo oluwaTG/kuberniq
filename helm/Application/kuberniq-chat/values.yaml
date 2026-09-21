@@ -49,7 +49,7 @@ podSecurityContext:
 
 containerSecurityContext:
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false   # Streamlit writes tmp files at runtime
+  readOnlyRootFilesystem: false   # Python and model-provider libraries may write runtime cache files
   capabilities:
     drop:
       - ALL
